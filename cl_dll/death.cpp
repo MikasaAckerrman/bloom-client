@@ -1,9 +1,9 @@
 /***
 *
 *	Copyright (c) 1996-2002, Valve LLC. All rights reserved.
-*	
-*	This product contains software technology licensed from Id 
-*	Software, Inc. ("Id Technology").  Id Technology (c) 1996 Id Software, Inc. 
+*
+*	This product contains software technology licensed from Id
+*	Software, Inc. ("Id Technology").  Id Technology (c) 1996 Id Software, Inc.
 *	All Rights Reserved.
 *
 *   Use, distribution, and modification of this source code and/or resulting
@@ -15,39 +15,114 @@
 //
 // death notice
 //
+// bloom: replaced the classic single-line valve notice with a CS2-style
+// killfeed -- rounded semi-transparent plates, coloured names, weapon icon,
+// and CS2 kill-modifier icons (blind / airborne / noscope / smoke / wallbang /
+// headshot / flash-assist) decoded from ReGameDLL's kill-rarity flags. Rows
+// slide in from the right, hold, then fade+drift out. Falls back to the legacy
+// notice when cl_killfeed is 0 or the kf sprites are missing.
+//
 #include "hud.h"
 #include "cl_util.h"
 #include "parsemsg.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "draw_util.h"
 #include "strl.h"
+#include "killfeed_layout.h"
 
 float color[3];
+
+// One modifier-icon sprite per kf_icon_slot (see killfeed_layout.h).
+static const char *kf_mod_names[KFI_COUNT] =
+{
+	"blind",        // KFI_BLIND
+	"inair",        // KFI_INAIR
+	"noscope",      // KFI_NOSCOPE
+	"smoke",        // KFI_SMOKE
+	"penetrate",    // KFI_PENETRATE
+	"headshot",     // KFI_HEADSHOT
+	"flashbang_assist" // KFI_FLASHASSIST
+};
+
+// Weapon icon table. The server sends the killer weapon name with weapon_/
+// monster_/func_ already stripped (see ReGameDLL GetKillerWeaponName), so we
+// match the bare name and map a few CS aliases onto our sprite files.
+struct kf_weapon_map { const char *msg; const char *spr; };
+static const kf_weapon_map kf_weapons[] =
+{
+	{ "ak47", "ak47" }, { "aug", "aug" }, { "awp", "awp" },
+	{ "deagle", "deagle" }, { "elite", "elite" }, { "famas", "famas" },
+	{ "fiveseven", "fiveseven" }, { "g3sg1", "g3sg1" }, { "galil", "galilar" },
+	{ "galilar", "galilar" }, { "glock18", "glock" }, { "glock", "glock" },
+	{ "m249", "m249" }, { "m4a1", "m4a1" }, { "mac10", "mac10" },
+	{ "mp5navy", "mp5sd" }, { "mp5sd", "mp5sd" }, { "p90", "p90" },
+	{ "p228", "deagle" }, { "scout", "ssg08" }, { "ssg08", "ssg08" },
+	{ "sg550", "g3sg1" }, { "sg552", "sg556" }, { "sg556", "sg556" },
+	{ "tmp", "mac10" }, { "ump45", "ump45" }, { "usp", "usp_silencer" },
+	{ "usp_silencer", "usp_silencer" }, { "xm1014", "xm1014" },
+	{ "m3", "xm1014" }, { "hegrenade", "hegrenade" },
+	{ "flashbang", "flashbang" }, { "smokegrenade", "smokegrenade" },
+	{ "c4", "c4" }, { "knife", "knife" }, { "grenade", "hegrenade" },
+	{ NULL, NULL }
+};
+
+#define KF_MAX_WEAPONS  40
 
 struct DeathNoticeItem {
 	char szKiller[MAX_PLAYER_NAME_LENGTH*2];
 	char szVictim[MAX_PLAYER_NAME_LENGTH*2];
-	int iId;	// the index number of the associated sprite
+	char szAssister[MAX_PLAYER_NAME_LENGTH*2];
+	int iId;	// the index number of the associated sprite (legacy path)
+	int iKfWeapon;  // index into m_kfWeapon[], or -1
 	bool bSuicide;
 	bool bTeamKill;
 	bool bNonPlayerKill;
+	bool bLocal;    // local player is killer or victim -> red border
+	bool bVictimIsLocalDeath; // local player is the victim -> dark red plate
 	float flDisplayTime;
+	float flSpawnTime;
 	float *KillerColor;
 	float *VictimColor;
+	float *AssisterColor;
 	int iHeadShotId;
+	kf_row_mods mods;
 };
 
-#define MAX_DEATHNOTICES	4
+#define MAX_DEATHNOTICES	5
 static int DEATHNOTICE_DISPLAY_TIME = 6;
 
 #define DEATHNOTICE_TOP		32
 
 DeathNoticeItem rgDeathNoticeList[ MAX_DEATHNOTICES + 1 ];
 
+// kf sprite handles (parallel to a private name list)
+static HSPRITE  s_kfWeaponSpr[ KF_MAX_WEAPONS ];
+static char     s_kfWeaponName[ KF_MAX_WEAPONS ][ 24 ];
+static int      s_kfWeaponCount = 0;
+static HSPRITE  s_kfModSpr[ KFI_COUNT ];
+static bool     s_kfReady = false;
+
 cvar_t *cl_killsound;
 cvar_t *cl_killsound_path;
+
+// ---- killfeed visual metrics (fractions of plate height H) ----
+// measured against the real killfeed (see project notes). Plate height is
+// derived from the console font so the feed scales with hud_scale / DPI.
+#define KF_F_PADX      0.34f
+#define KF_F_GAP       0.26f
+#define KF_F_GAP_WING  0.05f
+#define KF_F_RADIUS    0.13f
+#define KF_F_BORDER    0.07f
+#define KF_F_WING_DY  -0.34f
+#define KF_F_PITCH     1.14f   // row-to-row spacing (plate + gap)
+#define KF_ENTER_MS    180.0f
+#define KF_EXIT_MS     220.0f
+
+static inline int kf_min( int a, int b ) { return a < b ? a : b; }
+static inline int kf_max( int a, int b ) { return a > b ? a : b; }
 
 int CHudDeathNotice :: Init( void )
 {
@@ -58,6 +133,8 @@ int CHudDeathNotice :: Init( void )
 	hud_deathnotice_time = CVAR_CREATE( "hud_deathnotice_time", "6", FCVAR_ARCHIVE );
 	cl_killsound = CVAR_CREATE( "cl_killsound", "0", FCVAR_ARCHIVE );
 	cl_killsound_path = CVAR_CREATE( "cl_killsound_path", "buttons/bell1.wav", FCVAR_ARCHIVE );
+	cl_killfeed = CVAR_CREATE( "cl_killfeed", "1", FCVAR_ARCHIVE );
+	cl_killfeed_time = CVAR_CREATE( "cl_killfeed_time", "6", FCVAR_ARCHIVE );
 	m_iFlags = 0;
 
 	return 1;
@@ -67,20 +144,291 @@ int CHudDeathNotice :: Init( void )
 void CHudDeathNotice :: InitHUDData( void )
 {
 	memset( rgDeathNoticeList, 0, sizeof(rgDeathNoticeList) );
+	for( int i = 0; i < MAX_DEATHNOTICES + 1; i++ )
+		rgDeathNoticeList[i].iKfWeapon = -1;
 }
 
+void CHudDeathNotice :: KF_LoadIcons( void )
+{
+	char path[64];
+	int i;
+
+	s_kfWeaponCount = 0;
+	s_kfReady = false;
+
+	for( i = 0; kf_weapons[i].msg && s_kfWeaponCount < KF_MAX_WEAPONS; i++ )
+	{
+		// de-dup by sprite file: several msg names share one sprite
+		snprintf( path, sizeof(path), "sprites/kf/%s.spr", kf_weapons[i].spr );
+		HSPRITE h = SPR_Load( path );
+		strlcpy( s_kfWeaponName[s_kfWeaponCount], kf_weapons[i].msg,
+				 sizeof(s_kfWeaponName[0]) );
+		s_kfWeaponSpr[s_kfWeaponCount] = h;
+		s_kfWeaponCount++;
+	}
+
+	for( i = 0; i < KFI_COUNT; i++ )
+	{
+		snprintf( path, sizeof(path), "sprites/kf/%s.spr", kf_mod_names[i] );
+		s_kfModSpr[i] = SPR_Load( path );
+	}
+
+	// consider ready if at least the AWP + headshot loaded (proxy for the pack)
+	int awp = KF_WeaponSprite( "awp" );
+	s_kfReady = ( awp >= 0 && s_kfWeaponSpr[awp] != 0 && s_kfModSpr[KFI_HEADSHOT] != 0 );
+}
+
+int CHudDeathNotice :: KF_WeaponSprite( const char *killedwith )
+{
+	// killedwith is "d_<name>"; skip the d_ if present.
+	const char *name = killedwith;
+	if( name[0] == 'd' && name[1] == '_' )
+		name += 2;
+
+	for( int i = 0; i < s_kfWeaponCount; i++ )
+	{
+		if( !stricmp( s_kfWeaponName[i], name ) )
+			return i;
+	}
+	return -1;
+}
 
 int CHudDeathNotice :: VidInit( void )
 {
 	m_HUD_d_skull = gHUD.GetSpriteIndex( "d_skull" );
 	m_HUD_d_headshot = gHUD.GetSpriteIndex("d_headshot");
 
+	KF_LoadIcons();
+
 	return 1;
+}
+
+// ---- CS2 killfeed row drawing ------------------------------------------------
+
+// scaled draw of a kf sprite: uses pfnSPR_DrawGeneric so the native-size SPR
+// can be tinted (via SPR_Set) and blended additively at any on-screen size.
+static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
+						 int r, int g, int b )
+{
+	wrect_t rc;
+	if( !spr )
+		return;
+	rc.left = 0; rc.top = 0;
+	rc.right = SPR_Width( spr, 0 );
+	rc.bottom = SPR_Height( spr, 0 );
+
+	SPR_Set( spr, r, g, b );
+	// blendsrc GL_ONE(1), blenddst GL_ONE(1) -> additive, matches the white
+	// premultiplied-over-black sprites we bake (see png2spr32.py).
+	gEngfuncs.pfnSPR_DrawGeneric( 0, x, y, &rc, 1, 1, w, h );
+}
+
+static inline int KF_IconW( HSPRITE spr, int h )
+{
+	int sw, sh;
+	if( !spr ) return 0;
+	sw = SPR_Width( spr, 0 );
+	sh = SPR_Height( spr, 0 );
+	if( sh <= 0 ) return h;
+	return ( sw * h ) / sh; // preserve aspect, never stretch
+}
+
+// Measure the pixel width of one row at plate height H.
+static int KF_RowWidth( const DeathNoticeItem *item, int H, int iconH, int modH,
+						int gap, int gapWing, int padx )
+{
+	int w = padx;
+	int j;
+	bool first = true;
+
+	#define KF_ADV(px) do { if(!first) w += gap; w += (px); first = false; } while(0)
+
+	for( j = 0; j < item->mods.nPre; j++ )
+		KF_ADV( KF_IconW( s_kfModSpr[item->mods.pre[j]], modH ) );
+
+	if( !item->bSuicide && item->szKiller[0] )
+		KF_ADV( DrawUtils::ConsoleStringLen( item->szKiller ) );
+
+	if( item->mods.flashAssist && item->szAssister[0] )
+	{
+		KF_ADV( KF_IconW( s_kfModSpr[KFI_FLASHASSIST], modH ) );
+		KF_ADV( DrawUtils::ConsoleStringLen( item->szAssister ) );
+	}
+
+	if( item->mods.wing >= 0 )
+	{
+		// wing sits just left of the weapon with a tiny gap
+		if(!first) w += gap;
+		w += KF_IconW( s_kfModSpr[item->mods.wing], modH );
+		first = false;
+		w += gapWing; // replaces the normal gap before the weapon
+		w += ( item->iKfWeapon >= 0 ) ? KF_IconW( s_kfWeaponSpr[item->iKfWeapon], iconH ) : 0;
+	}
+	else
+	{
+		KF_ADV( ( item->iKfWeapon >= 0 ) ? KF_IconW( s_kfWeaponSpr[item->iKfWeapon], iconH ) : 0 );
+	}
+
+	for( j = 0; j < item->mods.nMid; j++ )
+		KF_ADV( KF_IconW( s_kfModSpr[item->mods.mid[j]], modH ) );
+
+	if( !item->bNonPlayerKill && item->szVictim[0] )
+		KF_ADV( DrawUtils::ConsoleStringLen( item->szVictim ) );
+
+	#undef KF_ADV
+	w += padx;
+	return w;
+}
+
+// Draw a rounded rectangle by filling an inner rect and clipping the corners
+// with small notches (engine has no native rounded fill from the client).
+static void KF_RoundedPlate( int x, int y, int w, int h, int radius,
+							 int r, int g, int b, int a )
+{
+	if( radius * 2 > h ) radius = h / 2;
+	if( radius * 2 > w ) radius = w / 2;
+	// center band (full height)
+	FillRGBABlend( x + radius, y, w - radius * 2, h, r, g, b, a );
+	// left/right bands (reduced height for the rounded ends)
+	FillRGBABlend( x, y + radius, radius, h - radius * 2, r, g, b, a );
+	FillRGBABlend( x + w - radius, y + radius, radius, h - radius * 2, r, g, b, a );
+	// diagonal step-fill of the four corners (cheap anti-alias-ish)
+	for( int i = 0; i < radius; i++ )
+	{
+		int inset = radius - (int)( sqrtf( (float)(radius*radius - (radius-i)*(radius-i)) ) );
+		FillRGBABlend( x + inset,             y + i,             radius - inset, 1, r, g, b, a );
+		FillRGBABlend( x + w - radius,        y + i,             radius - inset, 1, r, g, b, a );
+		FillRGBABlend( x + inset,             y + h - 1 - i,     radius - inset, 1, r, g, b, a );
+		FillRGBABlend( x + w - radius,        y + h - 1 - i,     radius - inset, 1, r, g, b, a );
+	}
+}
+
+static void KF_Border( int x, int y, int w, int h, int t, int r, int g, int b )
+{
+	FillRGBA( x, y, w, t, r, g, b, 255 );
+	FillRGBA( x, y + h - t, w, t, r, g, b, 255 );
+	FillRGBA( x, y, t, h, r, g, b, 255 );
+	FillRGBA( x + w - t, y, t, h, r, g, b, 255 );
+}
+
+static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
+					   float alpha, int slideDx )
+{
+	int iconH = (int)( H * 0.58f );
+	int modH  = (int)( H * 0.66f );
+	int gap   = (int)( H * KF_F_GAP );
+	int gapW  = (int)( H * KF_F_GAP_WING );
+	int padx  = (int)( H * KF_F_PADX );
+	int radius = (int)( H * KF_F_RADIUS );
+	int border = kf_max( 1, (int)( H * KF_F_BORDER ) );
+	int j;
+
+	int w = KF_RowWidth( item, H, iconH, modH, gap, gapW, padx );
+	int x = rightX - w + slideDx;
+	int y = topY;
+	int cy = y + H / 2;
+
+	int baseA = (int)( ( item->bLocal ? 150 : 120 ) * alpha );
+	if( baseA < 4 ) return w;
+
+	// plate: neutral grey for normal, dark red tint for local death
+	int pr = 61, pg = 61, pb = 61;
+	if( item->bLocal && item->bVictimIsLocalDeath )
+		{ pr = 120; pg = 30; pb = 30; baseA = kf_min( 255, baseA + 60 ); }
+
+	KF_RoundedPlate( x, y, w, H, radius, pr, pg, pb, baseA );
+	if( item->bLocal )
+		KF_Border( x, y, w, H, border, 218, 24, 24 );
+
+	int tint = (int)( 255 * alpha );
+	int textR, textG, textB;
+	int cx = x + padx;
+	bool first = true;
+
+	// pre-killer modifiers
+	for( j = 0; j < item->mods.nPre; j++ )
+	{
+		HSPRITE s = s_kfModSpr[item->mods.pre[j]];
+		int iw = KF_IconW( s, modH );
+		if(!first) cx += gap; first = false;
+		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
+		cx += iw;
+	}
+
+	// killer name
+	if( !item->bSuicide && item->szKiller[0] )
+	{
+		if(!first) cx += gap; first = false;
+		if( item->KillerColor )
+			DrawUtils::SetConsoleTextColor( item->KillerColor[0]*alpha,
+											item->KillerColor[1]*alpha,
+											item->KillerColor[2]*alpha );
+		cx = DrawUtils::DrawConsoleString( cx, cy - gHUD.GetCharHeight()/2, item->szKiller );
+	}
+
+	// flash-assist icon + assister name
+	if( item->mods.flashAssist && item->szAssister[0] )
+	{
+		HSPRITE s = s_kfModSpr[KFI_FLASHASSIST];
+		int iw = KF_IconW( s, modH );
+		if(!first) cx += gap; first = false;
+		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
+		cx += iw + gap;
+		if( item->AssisterColor )
+			DrawUtils::SetConsoleTextColor( item->AssisterColor[0]*alpha,
+											item->AssisterColor[1]*alpha,
+											item->AssisterColor[2]*alpha );
+		cx = DrawUtils::DrawConsoleString( cx, cy - gHUD.GetCharHeight()/2, item->szAssister );
+	}
+
+	// wing (raised) then weapon, or just weapon
+	if( item->mods.wing >= 0 )
+	{
+		HSPRITE s = s_kfModSpr[item->mods.wing];
+		int iw = KF_IconW( s, modH );
+		if(!first) cx += gap; first = false;
+		KF_DrawIcon( s, cx, cy - modH/2 + (int)( H * KF_F_WING_DY ), iw, modH, tint, tint, tint );
+		cx += iw + gapW;
+	}
+	if( item->iKfWeapon >= 0 )
+	{
+		HSPRITE s = s_kfWeaponSpr[item->iKfWeapon];
+		int iw = KF_IconW( s, iconH );
+		if( !first && item->mods.wing < 0 ) cx += gap;
+		first = false;
+		KF_DrawIcon( s, cx, cy - iconH/2, iw, iconH, tint, tint, tint );
+		cx += iw;
+	}
+
+	// mid modifiers
+	for( j = 0; j < item->mods.nMid; j++ )
+	{
+		HSPRITE s = s_kfModSpr[item->mods.mid[j]];
+		int iw = KF_IconW( s, modH );
+		cx += gap;
+		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
+		cx += iw;
+	}
+
+	// victim name
+	if( !item->bNonPlayerKill && item->szVictim[0] )
+	{
+		cx += gap;
+		if( item->VictimColor )
+			DrawUtils::SetConsoleTextColor( item->VictimColor[0]*alpha,
+											item->VictimColor[1]*alpha,
+											item->VictimColor[2]*alpha );
+		DrawUtils::DrawConsoleString( cx, cy - gHUD.GetCharHeight()/2, item->szVictim );
+	}
+
+	return w;
 }
 
 int CHudDeathNotice :: Draw( float flTime )
 {
 	int x, y, r, g, b, i;
+
+	bool useKf = ( cl_killfeed->value != 0.0f ) && s_kfReady;
 
 	for( i = 0; i < MAX_DEATHNOTICES; i++ )
 	{
@@ -88,39 +436,58 @@ int CHudDeathNotice :: Draw( float flTime )
 			break;  // we've gone through them all
 
 		if ( rgDeathNoticeList[i].flDisplayTime < flTime )
-		{ // display time has expired
-			// remove the current item from the list
-			memmove( &rgDeathNoticeList[i], &rgDeathNoticeList[i+1], sizeof(DeathNoticeItem) * (MAX_DEATHNOTICES - i) );
-			i--;  // continue on the next item;  stop the counter getting incremented
-			continue;
-		}
-
-		rgDeathNoticeList[i].flDisplayTime = min( rgDeathNoticeList[i].flDisplayTime, flTime + DEATHNOTICE_DISPLAY_TIME );
-
-		// Hide when scoreboard drawing. It will break triapi
-		//if ( gViewPort && gViewPort->AllowedToPrintText() )
-		//if ( !gHUD.m_iNoConsolePrint )
-		{
-			// Draw the death notice
-			if( !g_iUser1 )
+		{ // display time has expired -- but keep the row alive during fade-out
+			if( useKf && ( flTime - rgDeathNoticeList[i].flDisplayTime ) < KF_EXIT_MS / 1000.0f )
 			{
-				y = YRES(DEATHNOTICE_TOP) + 2 + (20 * i);  //!!!
+				// still fading; leave it in place
 			}
 			else
 			{
-				y = ScreenHeight / 5 + 2 + (20 * i);
+				memmove( &rgDeathNoticeList[i], &rgDeathNoticeList[i+1], sizeof(DeathNoticeItem) * (MAX_DEATHNOTICES - i) );
+				i--;
+				continue;
 			}
+		}
+		else
+		{
+			rgDeathNoticeList[i].flDisplayTime = min( rgDeathNoticeList[i].flDisplayTime, flTime + DEATHNOTICE_DISPLAY_TIME );
+		}
+
+		if( useKf )
+		{
+			int H = (int)( gHUD.GetCharHeight() * 1.7f );
+			if( H < 20 ) H = 20;
+			int pitch = (int)( H * KF_F_PITCH );
+			int topY;
+			if( !g_iUser1 )
+				topY = YRES(DEATHNOTICE_TOP) + i * pitch;
+			else
+				topY = ScreenHeight / 5 + i * pitch;
+
+			float ageMs = ( flTime - rgDeathNoticeList[i].flSpawnTime ) * 1000.0f;
+			float deathMs = ( flTime - rgDeathNoticeList[i].flDisplayTime ) * 1000.0f;
+			float alpha, dx;
+			kf_anim_state( ageMs, deathMs, KF_ENTER_MS, KF_EXIT_MS, (float)( H * 1.4f ), &alpha, &dx );
+
+			KF_DrawRow( &rgDeathNoticeList[i], ScreenWidth - XRES(10), topY, H, alpha, (int)dx );
+			continue;
+		}
+
+		// -------- legacy valve death notice (cl_killfeed 0 / no sprites) -----
+		{
+			if( !g_iUser1 )
+				y = YRES(DEATHNOTICE_TOP) + 2 + (20 * i);
+			else
+				y = ScreenHeight / 5 + 2 + (20 * i);
 
 			int id = (rgDeathNoticeList[i].iId == -1) ? m_HUD_d_skull : rgDeathNoticeList[i].iId;
-			x = ScreenWidth - DrawUtils::ConsoleStringLen(rgDeathNoticeList[i].szVictim) - (gHUD.GetSpriteRect(id).Width());
+			x = ScreenWidth - DrawUtils::ConsoleStringLen(rgDeathNoticeList[i].szVictim) - (gHUD.GetSpriteRect(id).right - gHUD.GetSpriteRect(id).left);
 			if( rgDeathNoticeList[i].iHeadShotId )
-				x -= gHUD.GetSpriteRect(m_HUD_d_headshot).Width();
+				x -= (gHUD.GetSpriteRect(m_HUD_d_headshot).right - gHUD.GetSpriteRect(m_HUD_d_headshot).left);
 
 			if ( !rgDeathNoticeList[i].bSuicide )
 			{
 				x -= (5 + DrawUtils::ConsoleStringLen( rgDeathNoticeList[i].szKiller ) );
-
-				// Draw killers name
 				if ( rgDeathNoticeList[i].KillerColor )
 					DrawUtils::SetConsoleTextColor( rgDeathNoticeList[i].KillerColor[0], rgDeathNoticeList[i].KillerColor[1], rgDeathNoticeList[i].KillerColor[2] );
 				x = 5 + DrawUtils::DrawConsoleString( x, y, rgDeathNoticeList[i].szKiller );
@@ -128,24 +495,19 @@ int CHudDeathNotice :: Draw( float flTime )
 
 			r = 255;  g = 80;	b = 0;
 			if ( rgDeathNoticeList[i].bTeamKill )
-			{
-				r = 10;	g = 240; b = 10;  // display it in sickly green
-			}
+			{ r = 10;	g = 240; b = 10; }
 
-			// Draw death weapon
 			SPR_Set( gHUD.GetSprite(id), r, g, b );
 			SPR_DrawAdditive( 0, x, y, &gHUD.GetSpriteRect(id) );
-
-			x += (gHUD.GetSpriteRect(id).Width());
+			x += (gHUD.GetSpriteRect(id).right - gHUD.GetSpriteRect(id).left);
 
 			if( rgDeathNoticeList[i].iHeadShotId)
 			{
 				SPR_Set( gHUD.GetSprite(m_HUD_d_headshot), r, g, b );
 				SPR_DrawAdditive( 0, x, y, &gHUD.GetSpriteRect(m_HUD_d_headshot));
-				x += (gHUD.GetSpriteRect(m_HUD_d_headshot).Width());
+				x += (gHUD.GetSpriteRect(m_HUD_d_headshot).right - gHUD.GetSpriteRect(m_HUD_d_headshot).left);
 			}
 
-			// Draw victims name (if it was a player that was killed)
 			if (!rgDeathNoticeList[i].bNonPlayerKill)
 			{
 				if ( rgDeathNoticeList[i].VictimColor )
@@ -176,11 +538,24 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	strlcpy( killedwith, "d_", sizeof( killedwith ) );
 	strlcat( killedwith, reader.ReadString(), sizeof( killedwith ) );
 
-	//if (gViewPort)
-	//	gViewPort->DeathMsg( killer, victim );
-	gHUD.m_Scoreboard.DeathMsg( killer, victim );
+	// Optional extended payload (ReGameDLL): flags long, [position], [assister], [rarity long]
+	int deathFlags = 0, assister = 0, rarity = 0;
+	if( reader.Valid() )
+	{
+		deathFlags = reader.ReadLong();
+		if( deathFlags & 0x001 ) // PLAYERDEATH_POSITION
+		{
+			reader.ReadCoord(); reader.ReadCoord(); reader.ReadCoord();
+		}
+		if( deathFlags & 0x002 ) // PLAYERDEATH_ASSISTANT
+			assister = reader.ReadByte();
+		if( deathFlags & 0x004 ) // PLAYERDEATH_KILLRARITY
+			rarity = reader.ReadLong();
+	}
 
+	gHUD.m_Scoreboard.DeathMsg( killer, victim );
 	gHUD.m_Spectator.DeathMessage(victim);
+
 	int i;
 	for ( i = 0; i < MAX_DEATHNOTICES; i++ )
 	{
@@ -188,16 +563,18 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 			break;
 	}
 	if ( i == MAX_DEATHNOTICES )
-	{ // move the rest of the list forward to make room for this item
+	{
 		memmove( rgDeathNoticeList, rgDeathNoticeList+1, sizeof(DeathNoticeItem) * MAX_DEATHNOTICES );
 		i = MAX_DEATHNOTICES - 1;
 	}
 
-	//if (gViewPort)
-		//gViewPort->GetAllPlayersInfo();
+	// clear slot
+	memset( &rgDeathNoticeList[i], 0, sizeof(DeathNoticeItem) );
+	rgDeathNoticeList[i].iKfWeapon = -1;
+
 	gHUD.m_Scoreboard.GetAllPlayersInfo();
 
-	// Get the Killer's name
+	// Killer
 	const char *killer_name = NULL;
 	bool killer_this_player = false;
 	if ( killer >= 1 && killer <= MAX_PLAYERS )
@@ -205,7 +582,6 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 		killer_name = g_PlayerInfoList[killer].name;
 		killer_this_player = g_PlayerInfoList[killer].thisplayer;
 	}
-
 	if ( !killer_name )
 	{
 		killer_name = "";
@@ -217,12 +593,14 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 		strlcpy( rgDeathNoticeList[i].szKiller, killer_name, sizeof( rgDeathNoticeList[i].szKiller ) );
 	}
 
-	// Get the Victim's name
+	// Victim
 	const char *victim_name = NULL;
-
+	bool victim_this_player = false;
 	if ( victim >= 1 && victim <= MAX_PLAYERS )
+	{
 		victim_name = g_PlayerInfoList[ victim ].name;
-
+		victim_this_player = g_PlayerInfoList[ victim ].thisplayer;
+	}
 	if ( !victim_name )
 	{
 		victim_name = "";
@@ -234,32 +612,40 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 		strlcpy( rgDeathNoticeList[i].szVictim, victim_name, sizeof( rgDeathNoticeList[i].szVictim ) );
 	}
 
-	// Is it a non-player object kill?
-	// If victim is 255, the killer killed a specific, non-player object (like a sentrygun)
+	// Assister
+	if( assister >= 1 && assister <= MAX_PLAYERS && g_PlayerInfoList[assister].name )
+	{
+		rgDeathNoticeList[i].AssisterColor = GetClientColor( assister );
+		strlcpy( rgDeathNoticeList[i].szAssister, g_PlayerInfoList[assister].name, sizeof( rgDeathNoticeList[i].szAssister ) );
+	}
+
 	if( victim == 255 )
 	{
 		rgDeathNoticeList[i].bNonPlayerKill = true;
-
-		// Store the object's name in the Victim slot (skip the d_ bit)
 		strlcpy( rgDeathNoticeList[i].szVictim, killedwith+2, sizeof( rgDeathNoticeList[i].szVictim ) );
 	}
 	else
 	{
 		if ( killer == victim || killer == 0 )
 			rgDeathNoticeList[i].bSuicide = true;
-
 		if ( !strncmp( killedwith, "d_teammate", sizeof(killedwith)  ) )
 			rgDeathNoticeList[i].bTeamKill = true;
 	}
 
 	rgDeathNoticeList[i].iHeadShotId = headshot;
+	rgDeathNoticeList[i].bLocal = ( killer_this_player || victim_this_player || g_iUser2 == killer || g_iUser2 == victim );
+	rgDeathNoticeList[i].bVictimIsLocalDeath = victim_this_player;
 
-	// Find the sprite in the list
-	int spr = gHUD.GetSpriteIndex( killedwith );
+	// legacy sprite
+	rgDeathNoticeList[i].iId = gHUD.GetSpriteIndex( killedwith );
+	// kf weapon sprite
+	rgDeathNoticeList[i].iKfWeapon = KF_WeaponSprite( killedwith );
+	// decode modifiers (works with legacy headshot byte alone too)
+	kf_decode_modifiers( rarity, headshot, &rgDeathNoticeList[i].mods );
 
-	rgDeathNoticeList[i].iId = spr;
-
-	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime + hud_deathnotice_time->value;
+	rgDeathNoticeList[i].flSpawnTime = gHUD.m_flTime;
+	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime +
+		( cl_killfeed->value ? cl_killfeed_time->value : hud_deathnotice_time->value );
 
 	// Play kill sound
 	if ((killer_this_player || g_iUser2 == killer) &&
@@ -270,6 +656,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 		PlaySound(cl_killsound_path->string, cl_killsound->value);
 	}
 
+	// console log (unchanged)
 	if (rgDeathNoticeList[i].bNonPlayerKill)
 	{
 		ConsolePrint( rgDeathNoticeList[i].szKiller );
@@ -279,19 +666,13 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	}
 	else
 	{
-		// record the death notice in the console
 		if ( rgDeathNoticeList[i].bSuicide )
 		{
 			ConsolePrint( rgDeathNoticeList[i].szVictim );
-
 			if ( !strncmp( killedwith, "d_world", sizeof(killedwith)  ) )
-			{
 				ConsolePrint( " died" );
-			}
 			else
-			{
 				ConsolePrint( " killed self" );
-			}
 		}
 		else if ( rgDeathNoticeList[i].bTeamKill )
 		{
@@ -314,8 +695,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 				ConsolePrint(" with a headshot from ");
 			else
 				ConsolePrint(" with ");
-
-			ConsolePrint( killedwith+2 ); // skip over the "d_" part
+			ConsolePrint( killedwith+2 );
 		}
 
 		if( headshot ) ConsolePrint( " ***");
@@ -324,4 +704,3 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 
 	return 1;
 }
-

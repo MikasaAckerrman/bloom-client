@@ -514,6 +514,14 @@ private:
 	int m_HUD_d_skull;  // sprite index of skull icon
 	int m_HUD_d_headshot;
 	cvar_t *hud_deathnotice_time;
+
+	// --- CS2-style killfeed (bloom) ---
+	// One HSPRITE per weapon/modifier icon, lazily loaded from sprites/kf/*.spr.
+	// Loaded in VidInit; -1/0 means "not available, fall back to legacy path".
+	void KF_LoadIcons( void );
+	int  KF_WeaponSprite( const char *killedwith ); // index into m_kfWeapon[]
+	cvar_t *cl_killfeed;         // 1 = CS2 killfeed, 0 = classic valve notice
+	cvar_t *cl_killfeed_time;    // seconds a row stays before fading
 };
 
 //
