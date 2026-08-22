@@ -234,6 +234,23 @@ static inline int KF_IconW( HSPRITE spr, int h )
 	return ( sw * h ) / sh; // preserve aspect, never stretch
 }
 
+// Draw a killfeed name. The engine console font is a fixed-size bitmap that we
+// cannot make bold via a style flag, so we FAUX-BOLD it: draw the string twice
+// with a 1px horizontal offset, which thickens every stroke and reproduces the
+// heavy look of the reference without shipping a new font asset. Returns the
+// end x of a single (un-offset) pass so callers advance by the true text width.
+static int KF_DrawName( int x, int y, const char *name, float *rgb, float alpha )
+{
+	int endx;
+	if( rgb )
+		DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
+	endx = DrawUtils::DrawConsoleString( x, y, name );   // main pass, defines width
+	if( rgb )
+		DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
+	DrawUtils::DrawConsoleString( x + 1, y, name );       // +1px pass -> bold weight
+	return endx;
+}
+
 // Measure the pixel width of one row at plate height H.
 static int KF_RowWidth( const DeathNoticeItem *item, int H, int iconH, int modH,
 						int gap, int gapWing, int padx )
@@ -248,12 +265,12 @@ static int KF_RowWidth( const DeathNoticeItem *item, int H, int iconH, int modH,
 		KF_ADV( KF_IconW( s_kfModSpr[item->mods.pre[j]], modH ) );
 
 	if( !item->bSuicide && item->szKiller[0] )
-		KF_ADV( DrawUtils::ConsoleStringLen( item->szKiller ) );
+		KF_ADV( DrawUtils::ConsoleStringLen( item->szKiller ) + 1 ); // +1 faux-bold
 
 	if( item->mods.flashAssist && item->szAssister[0] )
 	{
 		KF_ADV( KF_IconW( s_kfModSpr[KFI_FLASHASSIST], modH ) );
-		KF_ADV( DrawUtils::ConsoleStringLen( item->szAssister ) );
+		KF_ADV( DrawUtils::ConsoleStringLen( item->szAssister ) + 1 );
 	}
 
 	if( item->mods.wing >= 0 )
@@ -274,7 +291,7 @@ static int KF_RowWidth( const DeathNoticeItem *item, int H, int iconH, int modH,
 		KF_ADV( KF_IconW( s_kfModSpr[item->mods.mid[j]], modH ) );
 
 	if( !item->bNonPlayerKill && item->szVictim[0] )
-		KF_ADV( DrawUtils::ConsoleStringLen( item->szVictim ) );
+		KF_ADV( DrawUtils::ConsoleStringLen( item->szVictim ) + 1 ); // +1 faux-bold
 
 	#undef KF_ADV
 	w += padx;
@@ -369,11 +386,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 	if( !item->bSuicide && item->szKiller[0] )
 	{
 		if(!first) cx += gap; first = false;
-		if( item->KillerColor )
-			DrawUtils::SetConsoleTextColor( item->KillerColor[0]*alpha,
-											item->KillerColor[1]*alpha,
-											item->KillerColor[2]*alpha );
-		cx = DrawUtils::DrawConsoleString( cx, ty, item->szKiller );
+		cx = KF_DrawName( cx, ty, item->szKiller, item->KillerColor, alpha );
 	}
 
 	// flash-assist icon + assister name
@@ -384,11 +397,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 		if(!first) cx += gap; first = false;
 		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
 		cx += iw + gap;
-		if( item->AssisterColor )
-			DrawUtils::SetConsoleTextColor( item->AssisterColor[0]*alpha,
-											item->AssisterColor[1]*alpha,
-											item->AssisterColor[2]*alpha );
-		cx = DrawUtils::DrawConsoleString( cx, ty, item->szAssister );
+		cx = KF_DrawName( cx, ty, item->szAssister, item->AssisterColor, alpha );
 	}
 
 	// wing (raised) then weapon, or just weapon
@@ -424,11 +433,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 	if( !item->bNonPlayerKill && item->szVictim[0] )
 	{
 		cx += gap;
-		if( item->VictimColor )
-			DrawUtils::SetConsoleTextColor( item->VictimColor[0]*alpha,
-											item->VictimColor[1]*alpha,
-											item->VictimColor[2]*alpha );
-		DrawUtils::DrawConsoleString( cx, ty, item->szVictim );
+		KF_DrawName( cx, ty, item->szVictim, item->VictimColor, alpha );
 	}
 
 	return w;

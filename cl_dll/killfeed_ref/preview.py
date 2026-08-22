@@ -15,8 +15,16 @@ SPR = "/tmp/minis-killfeed-bloom-20260822/3rdparty/cs16client-extras/sprites/kf"
 OUT = "/var/minis/attachments/killfeed-icons"
 
 # phone landscape + engine-ish font metric
-SCR_W, SCR_H = 2340, 1080
-TL = 30                                       # console line height at this res
+# To produce a 1:1 HONEST comparison against the 1300px reference, render at the
+# reference's own scale: plate H ~= 55px there, so TL ~= 31px.
+import sys as _sys
+REF_MODE = "--ref" in _sys.argv
+if REF_MODE:
+    SCR_W, SCR_H = 1300, 460
+    TL = 31
+else:
+    SCR_W, SCR_H = 2340, 1080
+    TL = 30
 SCALE = 1.0                                   # cl_killfeed_scale
 H = int(TL * R.PLATE_H_OVER_TL * SCALE)       # plate height
 ICON_H = max(8, int(H*R.ICON_OVER_H)); MOD_H = max(8, int(H*R.MOD_OVER_H))
@@ -44,7 +52,7 @@ def font(sz):
     for p in ("/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf",):
         if os.path.exists(p): return ImageFont.truetype(p,sz)
     return ImageFont.load_default()
-FN=font(int(H*0.54))      # name cap ends ~0.39*H like the approved reference
+FN=font(int(H*0.58))      # cap ends ~0.40*H, matching the reference exactly
 def iconw(name,h): w,sh=spr_size(name); return round(w*h/sh)
 
 def draw_row(img, rightX, topY, cfg, alpha=1.0, dx=0):
@@ -130,4 +138,7 @@ img.convert("RGB").save(os.path.join(OUT,"phone_preview.png"))
 # also a tight crop of the corner at 100%
 crop=img.crop((SCR_W-980,0,SCR_W,y+20)).convert("RGB")
 crop.save(os.path.join(OUT,"phone_corner.png"))
-print("saved phone_preview.png + phone_corner.png  H=%d TL=%d pitch=%d"%(H,TL,PITCH))
+# in ref mode, save a 1:1-scale crop for honest overlay with the reference
+if REF_MODE:
+    img.crop((0,MARGIN_TOP-6,SCR_W,y+6)).convert("RGB").save(os.path.join(OUT,"mine_refscale.png"))
+print("saved  H=%d TL=%d pitch=%d icon=%d mod=%d cap~%.2fH  refmode=%s"%(H,TL,PITCH,ICON_H,MOD_H,0.40,REF_MODE))
