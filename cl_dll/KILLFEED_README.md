@@ -48,9 +48,19 @@ CS2-style canister (no SVG existed on the source). Baked via
 premultiplied over black for additive blending).
 
 ## Metrics
-Measured against the real in-game killfeed (plate H, text cap 0.39H, weapon
-0.58H, modifier 0.66H, wing 0.62H, gaps 0.26H, wing→gun 0.05H, corner 0.13H).
-All fractions of plate height, so the feed scales with `hud_scale`/DPI.
+Measured **in pixels** from the approved v5 reference and kept in one source of
+truth: `cl_dll/killfeed_ref/kf_ratios.py` (the preview) mirrors the C constants
+in `death.cpp`. Reference: plate 56px, bold name cap 22px, weapon icon 34px,
+modifier 27px, pitch ~58px. Everything is keyed to the engine console line
+height (TL) — the one font we cannot resize — so the whole feed scales with the
+player-name size. `cl_killfeed_scale` (0.5–3.0) enlarges the whole block.
+Ordering that matters: weapon(0.61*H) > modifier(0.50*H) > name-cap(~0.39*H).
+
+Known limitation: player names use the engine console font via
+`pfnDrawConsoleString`, which is not bold and cannot be arbitrarily resized. In
+the reference mock the names are bold; in-game they render at the console
+font's native weight/size. Making them bold requires swapping the engine font
+(out of scope for the killfeed).
 
 ## Verification done
 - Host unit tests: modifier decode order, no double-headshot, animation curve,

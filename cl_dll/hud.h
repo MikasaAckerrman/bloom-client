@@ -522,6 +522,7 @@ private:
 	int  KF_WeaponSprite( const char *killedwith ); // index into m_kfWeapon[]
 	cvar_t *cl_killfeed;         // 1 = CS2 killfeed, 0 = classic valve notice
 	cvar_t *cl_killfeed_time;    // seconds a row stays before fading
+	cvar_t *cl_killfeed_scale;   // size multiplier (phone-friendly), default 1.0
 };
 
 //

@@ -116,7 +116,7 @@ cvar_t *cl_killsound_path;
 #define KF_F_GAP_WING  0.05f
 #define KF_F_RADIUS    0.13f
 #define KF_F_BORDER    0.07f
-#define KF_F_WING_DY  -0.34f
+#define KF_F_WING_DY  -0.20f
 #define KF_F_PITCH     1.14f   // row-to-row spacing (plate + gap)
 #define KF_ENTER_MS    180.0f
 #define KF_EXIT_MS     220.0f
@@ -135,6 +135,7 @@ int CHudDeathNotice :: Init( void )
 	cl_killsound_path = CVAR_CREATE( "cl_killsound_path", "buttons/bell1.wav", FCVAR_ARCHIVE );
 	cl_killfeed = CVAR_CREATE( "cl_killfeed", "1", FCVAR_ARCHIVE );
 	cl_killfeed_time = CVAR_CREATE( "cl_killfeed_time", "6", FCVAR_ARCHIVE );
+	cl_killfeed_scale = CVAR_CREATE( "cl_killfeed_scale", "1.0", FCVAR_ARCHIVE );
 	m_iFlags = 0;
 
 	return 1;
@@ -314,34 +315,43 @@ static void KF_Border( int x, int y, int w, int h, int t, int r, int g, int b )
 static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 					   float alpha, int slideDx )
 {
-	int iconH = (int)( H * 0.58f );
-	int modH  = (int)( H * 0.66f );
-	int gap   = (int)( H * KF_F_GAP );
-	int gapW  = (int)( H * KF_F_GAP_WING );
-	int padx  = (int)( H * KF_F_PADX );
-	int radius = (int)( H * KF_F_RADIUS );
-	int border = kf_max( 1, (int)( H * KF_F_BORDER ) );
+	// PROPORTIONS MEASURED IN PIXELS FROM THE APPROVED v5 REFERENCE.
+	// Reference: plate 56px, bold name cap 22px, weapon icon 34px, modifier
+	// (crossed-eye/event) 27px, pitch ~58px (~4px gap). Everything is keyed to
+	// the engine console line height (TL) -- the ONE font we have and cannot
+	// resize -- so the whole feed scales with the player-name size.
+	// Ordering that matters: weapon(0.61*H) > modifier(0.50*H) > name-cap
+	// (~0.39*H). Icons are a bit taller than the text but never huge.
+	int TL    = gHUD.GetCharHeight();
+	int iconH = kf_max( 8, (int)( H * 0.61f ) );   // weapon silhouette (largest)
+	int modH  = kf_max( 8, (int)( H * 0.50f ) );   // modifier / event icon
+	int gap   = kf_max( 2, (int)( TL * 0.34f ) );  // small tidy element gap
+	int gapW  = kf_max( 1, (int)( TL * 0.06f ) );  // wing -> weapon
+	int padx  = kf_max( 3, (int)( TL * 0.50f ) );  // inner L/R padding
+	int radius = kf_max( 2, (int)( H * 0.16f ) );  // ~9px @ ref
+	int border = kf_max( 2, (int)( H * 0.05f ) );  // 2-3px @ ref
 	int j;
 
 	int w = KF_RowWidth( item, H, iconH, modH, gap, gapW, padx );
 	int x = rightX - w + slideDx;
 	int y = topY;
 	int cy = y + H / 2;
+	int ty = cy - TL / 2;  // text baseline row (console string draws from top)
 
-	int baseA = (int)( ( item->bLocal ? 150 : 120 ) * alpha );
+	// dark translucent plate (near-black ~0.63 alpha), matching the reference.
+	int baseA = (int)( ( item->bLocal ? 170 : 160 ) * alpha );
 	if( baseA < 4 ) return w;
 
-	// plate: neutral grey for normal, dark red tint for local death
-	int pr = 61, pg = 61, pb = 61;
+	// plate: near-black for normal, dark red tint when the local player died
+	int pr = 18, pg = 18, pb = 18;
 	if( item->bLocal && item->bVictimIsLocalDeath )
-		{ pr = 120; pg = 30; pb = 30; baseA = kf_min( 255, baseA + 60 ); }
+		{ pr = 90; pg = 22; pb = 22; baseA = kf_min( 235, baseA + 40 ); }
 
 	KF_RoundedPlate( x, y, w, H, radius, pr, pg, pb, baseA );
 	if( item->bLocal )
-		KF_Border( x, y, w, H, border, 218, 24, 24 );
+		KF_Border( x, y, w, H, border, 255, 36, 36 );  // bright red outline
 
 	int tint = (int)( 255 * alpha );
-	int textR, textG, textB;
 	int cx = x + padx;
 	bool first = true;
 
@@ -363,7 +373,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 			DrawUtils::SetConsoleTextColor( item->KillerColor[0]*alpha,
 											item->KillerColor[1]*alpha,
 											item->KillerColor[2]*alpha );
-		cx = DrawUtils::DrawConsoleString( cx, cy - gHUD.GetCharHeight()/2, item->szKiller );
+		cx = DrawUtils::DrawConsoleString( cx, ty, item->szKiller );
 	}
 
 	// flash-assist icon + assister name
@@ -378,7 +388,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 			DrawUtils::SetConsoleTextColor( item->AssisterColor[0]*alpha,
 											item->AssisterColor[1]*alpha,
 											item->AssisterColor[2]*alpha );
-		cx = DrawUtils::DrawConsoleString( cx, cy - gHUD.GetCharHeight()/2, item->szAssister );
+		cx = DrawUtils::DrawConsoleString( cx, ty, item->szAssister );
 	}
 
 	// wing (raised) then weapon, or just weapon
@@ -418,7 +428,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 			DrawUtils::SetConsoleTextColor( item->VictimColor[0]*alpha,
 											item->VictimColor[1]*alpha,
 											item->VictimColor[2]*alpha );
-		DrawUtils::DrawConsoleString( cx, cy - gHUD.GetCharHeight()/2, item->szVictim );
+		DrawUtils::DrawConsoleString( cx, ty, item->szVictim );
 	}
 
 	return w;
@@ -455,21 +465,32 @@ int CHudDeathNotice :: Draw( float flTime )
 
 		if( useKf )
 		{
-			int H = (int)( gHUD.GetCharHeight() * 1.7f );
-			if( H < 20 ) H = 20;
-			int pitch = (int)( H * KF_F_PITCH );
-			int topY;
-			if( !g_iUser1 )
-				topY = YRES(DEATHNOTICE_TOP) + i * pitch;
-			else
-				topY = ScreenHeight / 5 + i * pitch;
+			// Plate height keyed to the console font line height so text fits
+			// snugly; user scale lets phones bump it up/down. On a phone the
+			// feed sits in the top-right corner and never spans the screen.
+			float sc = cl_killfeed_scale->value;
+			if( sc < 0.5f ) sc = 0.5f;
+			if( sc > 3.0f ) sc = 3.0f;
+			int TL = gHUD.GetCharHeight();
+			// Plate height keyed to the ACTUAL console font (which sets the
+			// name text size we cannot enlarge past native). Ref ratio H~1.4*TL
+			// keeps names and icons at comparable visual weight (icon ~1.8x cap
+			// height, exactly like screenshots #1/#4). Enlarge the whole block
+			// with cl_killfeed_scale, never by shrinking the text.
+			int H = (int)( TL * 1.80f * sc );
+			if( H < 18 ) H = 18;
+			int pitch = (int)( H * 1.07f );  // ref vertical rhythm (~4px gap)
+			// top margin: a little down from the very top, right-aligned
+			int marginTop = YRES( 8 );
+			int marginRight = XRES( 6 );
+			int topY = marginTop + i * pitch;
 
 			float ageMs = ( flTime - rgDeathNoticeList[i].flSpawnTime ) * 1000.0f;
 			float deathMs = ( flTime - rgDeathNoticeList[i].flDisplayTime ) * 1000.0f;
 			float alpha, dx;
 			kf_anim_state( ageMs, deathMs, KF_ENTER_MS, KF_EXIT_MS, (float)( H * 1.4f ), &alpha, &dx );
 
-			KF_DrawRow( &rgDeathNoticeList[i], ScreenWidth - XRES(10), topY, H, alpha, (int)dx );
+			KF_DrawRow( &rgDeathNoticeList[i], ScreenWidth - marginRight, topY, H, alpha, (int)dx );
 			continue;
 		}
 
