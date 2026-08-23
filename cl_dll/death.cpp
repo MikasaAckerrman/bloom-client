@@ -355,14 +355,19 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
 	int cy = y + H / 2;
 	int ty = cy - TL / 2;  // text baseline row (console string draws from top)
 
-	// dark translucent plate (near-black ~0.63 alpha), matching the reference.
-	int baseA = (int)( ( item->bLocal ? 170 : 160 ) * alpha );
+	// Translucent plate. MEASURED from the approved reference: the plate interior
+	// reads ~(49,47,44) over a ~(28,24,20) backdrop, i.e. it is LIGHTER than the
+	// scene behind it, not near-black. A dark plate (the previous 18,18,18 @ 0.63)
+	// made rows sink into the background instead of reading as separate tiles.
+	// A light grey at low alpha lifts the row over any backdrop while staying
+	// see-through, which is what the reference does.
+	int baseA = (int)( ( item->bLocal ? 120 : 105 ) * alpha );
 	if( baseA < 4 ) return w;
 
-	// plate: near-black for normal, dark red tint when the local player died
-	int pr = 18, pg = 18, pb = 18;
+	// plate: light grey for normal, red tint when the local player died
+	int pr = 70, pg = 68, pb = 64;
 	if( item->bLocal && item->bVictimIsLocalDeath )
-		{ pr = 90; pg = 22; pb = 22; baseA = kf_min( 235, baseA + 40 ); }
+		{ pr = 150; pg = 40; pb = 40; baseA = kf_min( 190, baseA + 45 ); }
 
 	KF_RoundedPlate( x, y, w, H, radius, pr, pg, pb, baseA );
 	if( item->bLocal )

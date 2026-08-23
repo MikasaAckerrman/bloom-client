@@ -27,5 +27,7 @@ PADX_OVER_TL    = 0.50   # inner L/R pad = 0.50 * text line height
 RADIUS_OVER_H   = 0.16   # corner radius = 0.16 * plate height (9px @ ref)
 BORDER_OVER_H   = 0.05   # local border  = 0.05 * plate height (2-3px @ ref)
 WING_DY_OVER_H  = -0.20  # wing raised   = -0.20 * plate height
-PLATE_ALPHA     = 165    # dark translucent plate (of 255) ~0.65
-PLATE_RGB       = (20, 20, 20)   # near-black
+PLATE_ALPHA     = 105    # translucent plate (of 255) ~0.41 -- see-through
+PLATE_RGB       = (70, 68, 64)   # light grey; reference interior ~(49,47,44)
+                                 # over a ~(28,24,20) backdrop, i.e. LIGHTER
+                                 # than the scene, never near-black
