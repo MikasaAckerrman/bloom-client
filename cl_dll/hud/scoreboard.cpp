@@ -29,6 +29,7 @@
 #include "draw_util.h"
 #include "vgui_parser.h"
 #include "eventscripts.h"
+#include "cl_sb_scheme.h"
 
 hud_player_info_t   g_PlayerInfoList[MAX_PLAYERS+1]; // player info from the engine
 extra_player_info_t	g_PlayerExtraInfo[MAX_PLAYERS+1]; // additional player info sent directly to the client dll
@@ -88,6 +89,232 @@ static struct Column
 
 //#include "vgui_TeamFortressViewport.h"
 
+// ===========================================================================
+// ClientScheme.res colours (CS 1.6 style)
+//
+// The board reads resource/ClientScheme.res once and uses it as the source of
+// its colours, exactly like the original CS 1.6 scoreboard: team1/team2/team0
+// for player-name colours, ListBG for the panel, SelectionBG for the local
+// player's row, BrightBaseText for headers. Anything the file omits keeps the
+// compiled-in default, so a missing or malformed file never blacks the board.
+//
+// bloom_scoreboard_scheme (default 1) lets a player turn the file off and get
+// the built-in palette back; bloom_scoreboard_scheme_file overrides the path.
+// ===========================================================================
+static sb_scheme_t s_scheme;
+static bool        s_scheme_tried = false;
+static cvar_t     *s_pCvarScheme      = nullptr;   // bloom_scoreboard_scheme (0/1)
+static cvar_t     *s_pCvarSchemeFile  = nullptr;   // path, default resource/ClientScheme.res
+
+static void Scoreboard_LoadScheme( void )
+{
+	s_scheme_tried = true;
+	memset( &s_scheme, 0, sizeof( s_scheme ));
+
+	if( s_pCvarScheme && s_pCvarScheme->value == 0.0f )
+		return; // explicitly disabled: keep built-in colours
+
+	const char *path = ( s_pCvarSchemeFile && s_pCvarSchemeFile->string[0] )
+		? s_pCvarSchemeFile->string : "resource/ClientScheme.res";
+
+	int len = 0;
+	char *buf = reinterpret_cast<char*>( gEngfuncs.COM_LoadFile( (char*)path, 5, &len ));
+	if( !buf )
+	{
+		gEngfuncs.Con_DPrintf( "Scoreboard: scheme '%s' not found -- using built-in colours\n", path );
+		return;
+	}
+
+	int got = SBScheme_Parse( buf, &s_scheme );
+	gEngfuncs.COM_FreeFile( buf );
+	gEngfuncs.Con_DPrintf( "Scoreboard: scheme '%s' -> %d key(s), have=0x%02x\n", path, got, s_scheme.have );
+}
+
+// Force a re-read next draw (e.g. after the player edits the file and reconnects).
+void Scoreboard_InvalidateScheme( void )
+{
+	s_scheme_tried = false;
+}
+
+// Player-name colour for a team, from the scheme when present, else the client's
+// built-in GetClientColor (which the reference board also falls back to). Values
+// are 0..255. Returns via r/g/b.
+static void Scoreboard_TeamColor( int r_in, int g_in, int b_in, int teamnumber, int &r, int &g, int &b )
+{
+	const unsigned char *c = nullptr;
+
+	switch( teamnumber )
+	{
+	case TEAM_TERRORIST:
+		// teamnumber 1 == Terrorists -> scheme key "team1"
+		if( s_scheme.have & SB_SCHEME_HAS_TEAM1 ) c = s_scheme.team1;
+		break;
+	case TEAM_CT:
+		// teamnumber 2 == Counter-Terrorists -> scheme key "team2"
+		if( s_scheme.have & SB_SCHEME_HAS_TEAM2 ) c = s_scheme.team2;
+		break;
+	case TEAM_SPECTATOR:
+	case TEAM_UNASSIGNED:
+		if( s_scheme.have & SB_SCHEME_HAS_TEAM0 ) c = s_scheme.team0;
+		break;
+	}
+
+	if( c )
+	{
+		r = c[0]; g = c[1]; b = c[2];
+	}
+	else
+	{
+		r = r_in; g = g_in; b = b_in; // built-in default already computed by caller
+	}
+}
+
+// Header / server-name text colour: BrightBaseText from the scheme, else the
+// board's historic amber (255 140 0).
+static void Scoreboard_HeaderColor( int &r, int &g, int &b )
+{
+	if( s_scheme.have & SB_SCHEME_HAS_HEADER_TEXT )
+	{
+		r = s_scheme.header_text[0]; g = s_scheme.header_text[1]; b = s_scheme.header_text[2];
+	}
+	else { r = 255; g = 140; b = 0; }
+}
+
+// ===========================================================================
+// Adaptive board size (ported from the engine reference cl_scoreboard_slayer.c)
+//
+// The board advances a fractional `list_slot` and draws each element at
+// ystart + list_slot * pitch, breaking when ypos > yend. With the old fixed
+// pitch (ROW_GAP 15) and fixed 75%-wide box the board was the same size for one
+// player or a full server: a lone player floated in a huge empty panel, and a
+// 32-player server ran past the bottom edge so the last rows were clipped.
+//
+// Scoreboard_ComputeGeometry sizes the panel to the roster:
+//   * width grows from a compact fraction (few players) to a wider one (full),
+//   * row pitch is the comfortable "natural" height for a sparse roster, and is
+//     compressed only enough that a full server's LAST DRAWN ROW still sits
+//     inside the panel — never clipped.
+//
+// s_rowPitch replaces the ROW_GAP constant in every ypos computation. The two
+// slot models (drawn-bottom for the panel height, running-extent for the pitch
+// clamp) are the ones proved against a loop simulation in test_sb_layout.cpp.
+
+static float s_rowPitch = 15.0f;   // px per list_slot unit; set per-frame below
+
+// Live-tunable so a player can widen/tighten without a rebuild. Defaults match
+// the engine reference board.
+static cvar_t *s_pCvarWidthMax     = nullptr;  // bloom_scoreboard_width        (full-roster width frac)
+static cvar_t *s_pCvarWidthCompact = nullptr;  // bloom_scoreboard_width_compact(few-player width frac)
+static cvar_t *s_pCvarShowKit      = nullptr;  // bloom_scoreboard_show_defusekit (0 = hide "Компл." column text)
+
+// Count players and the teams that will actually get a header, so the geometry
+// matches what the draw loops emit. Called after GetAllPlayersInfo(), before the
+// draw loops NULL the names out.
+static void Scoreboard_CountRoster( int &out_players, int &out_teams )
+{
+	int players = 0;
+	// buckets keyed by teamnumber: CT, T, spectator/unassigned, other
+	bool have_ct = false, have_t = false, have_spec = false, have_other = false;
+
+	for( int i = 1; i < MAX_PLAYERS; i++ )
+	{
+		if( !g_PlayerInfoList[i].name || !g_PlayerInfoList[i].name[0] )
+			continue;
+		players++;
+
+		switch( g_PlayerExtraInfo[i].teamnumber )
+		{
+		case TEAM_CT:         have_ct = true; break;
+		case TEAM_TERRORIST:  have_t = true; break;
+		case TEAM_SPECTATOR:
+		case TEAM_UNASSIGNED: have_spec = true; break;
+		default:              have_other = true; break;
+		}
+	}
+
+	out_players = players;
+	out_teams   = ( have_ct ? 1 : 0 ) + ( have_t ? 1 : 0 )
+	            + ( have_spec ? 1 : 0 ) + ( have_other ? 1 : 0 );
+}
+
+// Sets xstart/xend/ystart/yend and s_rowPitch for the given roster. Centered.
+static void Scoreboard_ComputeGeometry( int num_players, bool teamplay, int num_teams )
+{
+	const int scr_w = ScreenWidth;
+	const int scr_h = ScreenHeight;
+
+	// --- width: interpolate compact->max across 5..20 players (engine wfrac) ---
+	float max_frac     = s_pCvarWidthMax     ? s_pCvarWidthMax->value     : 0.72f;
+	float compact_frac = s_pCvarWidthCompact ? s_pCvarWidthCompact->value : 0.62f;
+
+	if( max_frac < 0.55f ) max_frac = 0.55f;
+	if( max_frac > 0.95f ) max_frac = 0.95f;
+	if( compact_frac < 0.50f ) compact_frac = 0.50f;
+	if( compact_frac > max_frac ) compact_frac = max_frac;
+
+	float roster_t = (float)( num_players - 5 ) / 15.0f;
+	if( roster_t < 0.0f ) roster_t = 0.0f;
+	if( roster_t > 1.0f ) roster_t = 1.0f;
+
+	float wfrac = compact_frac + ( max_frac - compact_frac ) * roster_t;
+	int board_w = (int)( scr_w * wfrac );
+	int min_w = (int)( scr_w * 0.50f );
+	int max_w = (int)( scr_w * 0.95f );
+	if( board_w < min_w ) board_w = min_w;
+	if( board_w > max_w ) board_w = max_w;
+
+	// --- slot extents (see test_sb_layout.cpp) ---
+	// running_extent overshoots by the trailing DrawPlayers advances; using it as
+	// the pitch denominator guarantees even those advances fit, so nothing clips.
+	// drawn_bottom is where the LAST VISIBLE row sits; the panel is sized to it so
+	// a small roster gets no empty strip under the last player.
+	float running_extent, drawn_bottom;
+	if( teamplay )
+	{
+		running_extent = 8.8f + 3.6f * (float)num_teams + (float)num_players;
+		drawn_bottom   = 3.6f * (float)num_teams + (float)num_players + 0.8f;
+	}
+	else
+	{
+		running_extent = 4.8f + (float)num_players;
+		drawn_bottom   = 2.8f + (float)num_players;
+	}
+	if( num_players <= 0 ) { running_extent = 4.8f; drawn_bottom = 2.8f; }
+
+	// --- pitch: comfortable natural height, compressed only to avoid clipping ---
+	int charH = gHUD.GetCharHeight();
+	if( charH < 8 ) charH = 8;                 // sane floor if scrinfo not ready
+	int pad = charH / 3;
+	if( pad < 4 )  pad = 4;
+	if( pad > 12 ) pad = 12;
+	float natural = (float)( charH + pad );
+	if( natural < 15.0f ) natural = 15.0f;     // never tighter than the old board
+
+	float avail = (float)scr_h * 0.92f;        // usable vertical band
+	float fit   = ( running_extent > 0.0f ) ? avail / running_extent : natural;
+	float pitch = ( natural < fit ) ? natural : fit;
+	if( pitch < 1.0f ) pitch = 1.0f;
+	s_rowPitch = pitch;
+
+	// --- panel rectangle, sized to the drawn content and centered ---
+	int board_h = (int)( ( drawn_bottom + 0.5f ) * pitch + 0.5f );  // +0.5 slot bottom margin
+	int avail_h = (int)( scr_h * 0.95f );
+	if( board_h > avail_h ) board_h = avail_h;
+
+	// small minimum so a near-empty server still reads as a board
+	int min_h = (int)( pitch * 4.0f );
+	if( board_h < min_h ) board_h = min_h;
+	if( board_h > avail_h ) board_h = avail_h;
+
+	xstart = ( scr_w - board_w ) / 2;
+	xend   = xstart + board_w;
+	ystart = ( scr_h - board_h ) / 2;
+	if( ystart < 0 ) ystart = 0;
+	yend   = ystart + board_h;
+}
+
+
+
 int CHudScoreboard :: Init( void )
 {
 	gHUD.AddHudElem( this );
@@ -107,6 +334,20 @@ int CHudScoreboard :: Init( void )
 	cl_showpacketloss = CVAR_CREATE( "cl_showpacketloss", "0", FCVAR_ARCHIVE );
 	cl_showplayerversion = CVAR_CREATE( "cl_showplayerversion", "0", 0 );
 	cl_show_scoreboard_on_death = CVAR_CREATE( "cl_show_scoreboard_on_death", "0", FCVAR_ARCHIVE );
+
+	// --- Bloom board: appearance from ClientScheme.res -------------------
+	// 1 = read the file (default), 0 = keep the compiled-in palette.
+	s_pCvarScheme     = CVAR_CREATE( "bloom_scoreboard_scheme", "1", FCVAR_ARCHIVE );
+	s_pCvarSchemeFile = CVAR_CREATE( "bloom_scoreboard_scheme_file",
+									 "resource/ClientScheme.res", FCVAR_ARCHIVE );
+
+	// --- Bloom board: adaptive size -------------------------------------
+	// Panel width as a fraction of the screen: _compact for a near-empty
+	// server, _width for a full roster; interpolated across 5..20 players.
+	s_pCvarWidthMax     = CVAR_CREATE( "bloom_scoreboard_width",         "0.72", FCVAR_ARCHIVE );
+	s_pCvarWidthCompact = CVAR_CREATE( "bloom_scoreboard_width_compact", "0.62", FCVAR_ARCHIVE );
+	// 0 = hide the defuse-kit tag in the attribute column (default).
+	s_pCvarShowKit      = CVAR_CREATE( "bloom_scoreboard_show_defusekit", "0", FCVAR_ARCHIVE );
 
 	return 1;
 }
@@ -147,6 +388,10 @@ void CHudScoreboard :: InitHUDData( void )
 	m_iFlags &= ~HUD_DRAW;  // starts out inactive
 
 	m_iFlags |= HUD_INTERMISSION; // is always drawn during an intermission
+
+	// Re-read ClientScheme.res on (re)connect so switching servers or editing
+	// the file takes effect without a restart.
+	Scoreboard_InvalidateScheme();
 }
 
 bool CHudScoreboard :: ShouldDrawScoreboard() const
@@ -163,7 +408,9 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
 	return false;
 }
 
-// Y positions
+// Y positions. The row pitch is now the adaptive s_rowPitch (computed per
+// roster in Scoreboard_ComputeGeometry); this constant is kept only as the
+// documented baseline the pitch never drops below.
 #define ROW_GAP  15
 
 int CHudScoreboard :: Draw( float flTime )
@@ -191,6 +438,29 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 {
 	GetAllPlayersInfo();
 	char ServerName[90];
+
+	// Colours come from ClientScheme.res; read once per connect (cheap no-op
+	// afterwards). Must happen before anything is drawn.
+	if( !s_scheme_tried )
+		Scoreboard_LoadScheme();
+
+	// Size the panel to the current roster (adaptive width + row pitch), unless
+	// showscoreboard2 supplied its own geometry via m_bForceDraw.
+	if( !m_bForceDraw )
+	{
+		int roster_players = 0, roster_teams = 0;
+		Scoreboard_CountRoster( roster_players, roster_teams );
+		Scoreboard_ComputeGeometry( roster_players, gHUD.m_Teamplay != 0, roster_teams );
+
+		// Panel fill from the scheme's ListBG when the file provides one.
+		if( s_scheme.have & SB_SCHEME_HAS_BG )
+		{
+			m_colors.r = s_scheme.bg[0];
+			m_colors.g = s_scheme.bg[1];
+			m_colors.b = s_scheme.bg[2];
+			m_colors.a = s_scheme.bg[3] ? s_scheme.bg[3] : 153;
+		}
+	}
 
 //	Packetloss removed on Kelly 'shipping nazi' Bailey's orders
 //	if ( cl_showpacketloss && cl_showpacketloss->value && ( ScreenWidth >= 400 ) )
@@ -229,7 +499,7 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 	DrawUtils::DrawRectangle(xstart, ystart, xend - xstart, yend - ystart,
 		m_colors.r, m_colors.g, m_colors.b, m_colors.a, m_bDrawStroke);
 
-	int ypos = ystart + (list_slot * ROW_GAP) + 5;
+	int ypos = ystart + (int)(list_slot * s_rowPitch) + 5;
 
 	if( gHUD.m_szServerName[0] )
 		// snprintf( ServerName, 80, "%s", (char*)(gHUD.m_Teamplay ? "TEAMS" : "PLAYERS"), gHUD.m_szServerName );
@@ -237,16 +507,29 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 	else
 		strncpy( ServerName, gHUD.m_Teamplay ? "TEAMS" : "PLAYERS", 80 );
 
-	DrawUtils::DrawHudString( g_Columns[COL_NAME].start, ypos, g_Columns[COL_NAME].end, ServerName, 255, 140, 0 );
-	DrawUtils::DrawHudStringReverse( g_Columns[COL_HP].start, ypos, g_Columns[COL_HP].end, g_Columns[COL_HP].name, 255, 140, 0 );
-	DrawUtils::DrawHudStringReverse( g_Columns[COL_MONEY].start, ypos, g_Columns[COL_MONEY].end, g_Columns[COL_MONEY].name, 255, 140, 0 );
-	DrawUtils::DrawHudStringReverse( g_Columns[COL_KILLS].start, ypos, g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].name, 255, 140, 0 );
-	DrawUtils::DrawHudStringReverse( g_Columns[COL_DEATHS].start, ypos, g_Columns[COL_DEATHS].end, g_Columns[COL_DEATHS].name, 255, 140, 0 );
-	DrawUtils::DrawHudStringReverse( g_Columns[COL_PING].start, ypos, g_Columns[COL_PING].end, g_Columns[COL_PING].name, 255, 140, 0 );
+	// Header / column-label colour from the scheme (BrightBaseText), else amber.
+	int hr, hg, hb;
+	Scoreboard_HeaderColor( hr, hg, hb );
+
+	DrawUtils::DrawHudString( g_Columns[COL_NAME].start, ypos, g_Columns[COL_NAME].end, ServerName, hr, hg, hb );
+	DrawUtils::DrawHudStringReverse( g_Columns[COL_HP].start, ypos, g_Columns[COL_HP].end, g_Columns[COL_HP].name, hr, hg, hb );
+	DrawUtils::DrawHudStringReverse( g_Columns[COL_MONEY].start, ypos, g_Columns[COL_MONEY].end, g_Columns[COL_MONEY].name, hr, hg, hb );
+	DrawUtils::DrawHudStringReverse( g_Columns[COL_KILLS].start, ypos, g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].name, hr, hg, hb );
+	DrawUtils::DrawHudStringReverse( g_Columns[COL_DEATHS].start, ypos, g_Columns[COL_DEATHS].end, g_Columns[COL_DEATHS].name, hr, hg, hb );
+	DrawUtils::DrawHudStringReverse( g_Columns[COL_PING].start, ypos, g_Columns[COL_PING].end, g_Columns[COL_PING].name, hr, hg, hb );
 
 	list_slot += 2;
-	ypos = ystart + (list_slot * ROW_GAP);
-	FillRGBA( xstart, ypos, xend - xstart, 1, 255, 140, 0, 255);  // draw the separator line
+	ypos = ystart + (int)(list_slot * s_rowPitch);
+	{
+		// separator line: scheme DividerColor (BorderDark) when present, else amber
+		int sr = 255, sg = 140, sb = 0, sa = 255;
+		if( s_scheme.have & SB_SCHEME_HAS_DIVIDER )
+		{
+			sr = s_scheme.divider[0]; sg = s_scheme.divider[1];
+			sb = s_scheme.divider[2]; sa = s_scheme.divider[3] ? s_scheme.divider[3] : 255;
+		}
+		FillRGBA( xstart, ypos, xend - xstart, 1, sr, sg, sb, sa );
+	}
 
 	list_slot += 0.8;
 
@@ -265,7 +548,7 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 int CHudScoreboard :: DrawTeams( float list_slot )
 {
 	int j;
-	int ypos = ystart + (list_slot * ROW_GAP) + 5;
+	int ypos = ystart + (int)(list_slot * s_rowPitch) + 5;
 
 	// clear out team scores
 	for ( int i = 1; i <= m_iNumTeams; i++ )
@@ -358,7 +641,7 @@ int CHudScoreboard :: DrawTeams( float list_slot )
 		if ( team_info->players <= 0 )
 			continue;
 
-		ypos = ystart + (list_slot * ROW_GAP);
+		ypos = ystart + (int)(list_slot * s_rowPitch);
 
 		// check we haven't drawn too far down
 		if ( ypos > yend )  // don't draw to close to the lower border
@@ -383,6 +666,8 @@ int CHudScoreboard :: DrawTeams( float list_slot )
 		}
 
 		GetTeamColor( r, g, b, team_info->teamnumber );
+		// scheme team colour (team1/team2/team0) overrides the built-in when set
+		Scoreboard_TeamColor( r, g, b, team_info->teamnumber, r, g, b );
 		switch ( team_info->teamnumber )
 		{
 		case TEAM_TERRORIST:
@@ -412,7 +697,7 @@ int CHudScoreboard :: DrawTeams( float list_slot )
 
 		// draw underline
 		list_slot += 1.2f;
-		FillRGBA( xstart, ystart + (list_slot * ROW_GAP), xend - xstart, 1, r, g, b, 255);
+		FillRGBA( xstart, ystart + (int)(list_slot * s_rowPitch), xend - xstart, 1, r, g, b, 255);
 
 		list_slot += 0.4f;
 		// draw all the players that belong to this team, indented slightly
@@ -459,7 +744,7 @@ int CHudScoreboard :: DrawPlayers( float list_slot, int nameoffset, const char *
 		// draw out the best player
 		hud_player_info_t *pl_info = &g_PlayerInfoList[best_player];
 
-		int ypos = ystart + (list_slot * ROW_GAP);
+		int ypos = ystart + (int)(list_slot * s_rowPitch);
 
 		// check we haven't drawn too far down
 		if ( ypos > yend )  // don't draw to close to the lower border
@@ -471,9 +756,25 @@ int CHudScoreboard :: DrawPlayers( float list_slot, int nameoffset, const char *
 		g *= colors[1];
 		b *= colors[2];
 
+		// Scheme team colour (team1/team2/team0) overrides the built-in when the
+		// .res file sets one; otherwise the value computed above is kept.
+		Scoreboard_TeamColor( r, g, b, g_PlayerExtraInfo[best_player].teamnumber, r, g, b );
+
 		if(pl_info->thisplayer) // hey, it's me!
 		{
-			FillRGBABlend( xstart, ypos, xend - xstart, ROW_GAP, 255, 255, 255, 15 );
+			// Local player's row highlight: scheme SelectionBG when present, else
+			// the historic faint white wash. Band height follows the adaptive row
+			// pitch so it matches the row it marks.
+			int band = (int)s_rowPitch;
+			if( band < 1 ) band = 1;
+
+			if( s_scheme.have & SB_SCHEME_HAS_SELECTED_BG )
+				FillRGBABlend( xstart, ypos, xend - xstart, band,
+					s_scheme.selected_bg[0], s_scheme.selected_bg[1],
+					s_scheme.selected_bg[2],
+					s_scheme.selected_bg[3] ? s_scheme.selected_bg[3] : 15 );
+			else
+				FillRGBABlend( xstart, ypos, xend - xstart, band, 255, 255, 255, 15 );
 		}
 
 		DrawUtils::DrawHudString( g_Columns[COL_NAME].start + nameoffset, ypos, g_Columns[COL_NAME].start + 350, pl_info->name, r, g, b );
@@ -489,7 +790,8 @@ int CHudScoreboard :: DrawPlayers( float list_slot, int nameoffset, const char *
 					DrawUtils::DrawHudStringReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_BOMB" ), r, g, b );
 				else if( g_PlayerExtraInfo[best_player].vip )
 					DrawUtils::DrawHudStringReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_VIP" ),  r, g, b );
-				else if (g_PlayerExtraInfo[best_player].has_defuse_kit )
+				else if (g_PlayerExtraInfo[best_player].has_defuse_kit
+						 && s_pCvarShowKit && s_pCvarShowKit->value != 0.0f )
 					DrawUtils::DrawHudStringReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_DEFUSE_KIT" ),  r, g, b );
 			}
 		}
