@@ -74,6 +74,7 @@ int CHudHealth::Init(void)
 	HOOK_MESSAGE( gHUD.m_Health, Account );
 
 	m_iHealth = 100;
+	m_flDisplayHealth = 100.0f;
 	m_fFade = 0;
 	m_iFlags = 0;
 	m_bitsDamage = 0;
@@ -86,6 +87,10 @@ int CHudHealth::Init(void)
 	memset(m_dmg, 0, sizeof(DAMAGE_IMAGE) * NUM_DMG_TYPES);
 
 	CVAR_CREATE("cl_corpsestay", "600", FCVAR_ARCHIVE);
+	// 1 = animate the health readout, 0 = vanilla instant jump.
+	cl_health_transition = CVAR_CREATE( "cl_health_transition", "1", FCVAR_ARCHIVE );
+	// Approach rate; higher is snappier. Clamped to 1..100 where it is used.
+	cl_health_transition_speed = CVAR_CREATE( "cl_health_transition_speed", "10", FCVAR_ARCHIVE );
 	gHUD.AddHudElem(this);
 	return 1;
 }
@@ -103,6 +108,10 @@ void CHudHealth::Reset( void )
 	{
 		m_dmg[i].fExpire = 0;
 	}
+
+	// Start the readout at the real value on respawn, otherwise the animation
+	// would visibly count up from the health we died with.
+	m_flDisplayHealth = (float)m_iHealth;
 }
 
 int CHudHealth::VidInit(void)
@@ -275,6 +284,46 @@ void CHudHealth::DrawHealthBar( float flTime )
 	GetPainColor( r, g, b, a );
 	DrawUtils::ScaleColors(r, g, b, a );
 
+	// The true health to show. Values above 255 do not fit the byte-sized
+	// SVC_HEALTH message, so they arrive through HealthInfo (sb_health) instead;
+	// prefer that when the server actually reports an extended value.
+	int iTrueHealth = m_iHealth;
+	int idx = gEngfuncs.GetLocalPlayer()->index;
+	bool bExtended = ( idx >= 1 && idx <= MAX_PLAYERS
+					   && g_PlayerExtraInfo[idx].sb_health > 255 );
+
+	if( bExtended )
+		iTrueHealth = g_PlayerExtraInfo[idx].sb_health;
+
+	// Smoothly walk the displayed number towards the real value so a hit or a
+	// heal counts down/up instead of snapping. Framerate independent: the step
+	// is proportional to the frame delta, so the transition takes the same wall
+	// time at 30 or 300 fps. cl_health_transition 0 restores the instant jump.
+	if( cl_health_transition && cl_health_transition->value > 0.0f )
+	{
+		float flTarget = (float)iTrueHealth;
+		float flSpeed = cl_health_transition_speed
+						? cl_health_transition_speed->value : 10.0f;
+
+		if( flSpeed < 1.0f ) flSpeed = 1.0f;
+		if( flSpeed > 100.0f ) flSpeed = 100.0f;
+
+		float flDelta = flTarget - m_flDisplayHealth;
+
+		// Snap when close enough, otherwise the exponential approach would
+		// crawl for many frames without ever reaching the target.
+		if( fabs( flDelta ) < 0.5f )
+			m_flDisplayHealth = flTarget;
+		else
+			m_flDisplayHealth += flDelta * (float)gHUD.m_flTimeDelta * flSpeed;
+
+		if( m_flDisplayHealth < 0.0f ) m_flDisplayHealth = 0.0f;
+	}
+	else
+		m_flDisplayHealth = (float)iTrueHealth;
+
+	int iDisplayHealth = (int)( m_flDisplayHealth + 0.5f );
+
 	// Only draw health if we have the suit.
 	if (gHUD.m_iWeaponBits & (1<<(WEAPON_SUIT)))
 	{
@@ -289,12 +338,14 @@ void CHudHealth::DrawHealthBar( float flTime )
 
 		x = CrossWidth + HealthWidth / 2;
 
-		int idx = gEngfuncs.GetLocalPlayer()->index;
-
-		if( idx >= 1 && idx <= MAX_PLAYERS && g_PlayerExtraInfo[idx].sb_health > 255 )
-			x = DrawUtils::DrawHudNumber2( x, y, g_PlayerExtraInfo[idx].sb_health, r, g, b );
+		// Keep the vanilla 3-digit padded form for normal health and the
+		// variable-width form for extended values, but drive both from the
+		// animated number. While animating down from >255 the value can drop
+		// below 256, so pick the drawer by what is being SHOWN, not by the target.
+		if( bExtended || iDisplayHealth > 255 )
+			x = DrawUtils::DrawHudNumber2( x, y, iDisplayHealth, r, g, b );
 		else
-			x = DrawUtils::DrawHudNumber( x, y, DHN_3DIGITS | DHN_DRAWZERO, m_iHealth, r, g, b );
+			x = DrawUtils::DrawHudNumber( x, y, DHN_3DIGITS | DHN_DRAWZERO, iDisplayHealth, r, g, b );
 	}
 }
 

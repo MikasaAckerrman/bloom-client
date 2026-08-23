@@ -115,6 +115,12 @@ public:
 	int MsgFunc_Account( const char *pszName, int iSize, void *pbuf );
 
 	int m_iHealth;
+	// Animated health readout: the number actually drawn, easing towards
+	// m_iHealth (or the extended sb_health) instead of snapping. Driven in
+	// DrawHealthBar; cl_health_transition toggles it, _speed sets the rate.
+	float m_flDisplayHealth;
+	cvar_t *cl_health_transition;
+	cvar_t *cl_health_transition_speed;
 	int m_HUD_dmg_bio;
 	int m_HUD_cross;
 	//float m_fAttackFront, m_fAttackRear, m_fAttackLeft, m_fAttackRight;
