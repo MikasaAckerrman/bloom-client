@@ -401,6 +401,10 @@ private:
 	cvar_t *cl_showpacketloss;
 	cvar_t *cl_showplayerversion;
 	cvar_t *cl_show_scoreboard_on_death;
+	// bloom_stock_scoreboard: 0 = this board never draws, 1 = draw it only when
+	// explicitly asked for while the engine draws a board of its own (default),
+	// 2 = stock behaviour. See ShouldDrawScoreboard.
+	cvar_t *m_pCvarStockBoard;
 };
 
 //

@@ -184,6 +184,25 @@ public:
 		}
 	}
 
+	// Same panel, but the stroke colour is caller-supplied and the border is
+	// inset by cornerRadius at both ends of every edge, which leaves the corners
+	// open instead of drawing a hard 90-degree join. Used by the scoreboard so a
+	// themed install can colour its frame from ClientScheme.res.
+	static inline void DrawRectangleExt( int x, int y, int wide, int tall,
+						   int r = 0, int g = 0, int b = 0, int a = 153,
+						   int stroke_r = 255, int stroke_g = 140, int stroke_b = 0,
+						   bool drawStroke = true, int cornerRadius = 2 )
+	{
+		FillRGBABlend( x, y, wide, tall, r, g, b, a );
+		if ( drawStroke )
+		{
+			FillRGBA( x + cornerRadius, y,                wide - (cornerRadius * 2), 1,                        stroke_r, stroke_g, stroke_b, 255 );
+			FillRGBA( x,                y + cornerRadius, 1,                         tall - (cornerRadius * 2), stroke_r, stroke_g, stroke_b, 255 );
+			FillRGBA( x + wide - 1,     y + cornerRadius, 1,                         tall - (cornerRadius * 2), stroke_r, stroke_g, stroke_b, 255 );
+			FillRGBA( x + cornerRadius, y + tall - 1,     wide - (cornerRadius * 2), 1,                        stroke_r, stroke_g, stroke_b, 255 );
+		}
+	}
+
 	static void Draw2DQuad( float x1, float y1, float x2, float y2 );
 	static void DrawStretchPic( float x, float y, float w, float h,
 								float s1 = 0, float t1 = 0, float s2 = 1, float t2 = 1);

@@ -2,53 +2,89 @@
 """
 sb_render.py — geometry render of the ported scoreboard.
 
-NOT engine output (no NDK in this sandbox). It re-implements the layout that
-cl_dll/hud/scoreboard.cpp computes, using the same formulas, so the port can be
-eyeballed for breakage before a real build exists. Everything positional here is
-read off the C++: column anchors, slot advances, the adaptive width/pitch, the
-scheme colours and the local-player highlight.
+NOT engine output (no NDK here). It re-implements what cl_dll/hud/scoreboard.cpp
+computes and draws, line for line, so the port can be checked before a real
+build exists. Everything below is read off the C++ or off the real game data:
 
-Mirrors, in order:
-  Scoreboard_CountRoster / Scoreboard_ComputeGeometry   -> panel + s_rowPitch
-  DrawScoreboard   header at slot 0 (+5px), separator at slot 2, then +0.8
-  DrawTeams        team row, +1.2 underline, +0.4, members, +2 on exit
-  DrawPlayers      +1 per player
-  columns          PING=xend-15, then each = prev.end-10, NAME=xstart+15
+  layout    Scoreboard_CountRoster / Scoreboard_ComputeGeometry -> panel + pitch
+  frame     DrawUtils::DrawRectangleExt (corners inset by cornerRadius=2, so the
+            border is open at the corners; stroke from the scheme's BorderDark)
+  columns   PING = xend-15, each next = prev.end-10, NAME = xstart+15,
+            ends clamped with min(..., start - HudStringLen("9999")) etc.
+  slots     header at 0 (+5px), separator at 2, +0.8, then per team:
+            row, +1.2 underline, +0.4, members (+1 each), +2 on exit
+  labels    the REAL localized strings from cstrike_russian/valve_russian
+  colours   the REAL resource/ClientScheme.res of the installed game
+
+Deliberately NOT invented: there is no dead-row dimming in the code (a dead
+player gets the "Убит" tag and no HP value instead), and the header is
+left-aligned at the name column, not centred.
 
 Usage:
-  python3 sb_render.py --players 10 --teams 2 --out shot.png
-  python3 sb_render.py --players 2            # sparse roster (compact panel)
-  python3 sb_render.py --players 32           # full server (compressed pitch)
-  python3 sb_render.py --no-scheme            # built-in palette instead of .res
+  python3 sb_render.py --players 10
+  python3 sb_render.py --players 2      # compact panel
+  python3 sb_render.py --players 24     # pitch compresses, nothing clipped
+  python3 sb_render.py --no-scheme      # built-in palette (cvar 0)
+  python3 sb_render.py --show-kit       # bloom_scoreboard_show_defusekit 1
 """
 import argparse
 import os
+import re
 
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_CANDIDATES = (
-    "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf",
-)
+FONTS = ("/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf",
+         "/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf")
 
-# ClientScheme.res-ish palette (what the .res reader supplies when present)
-SCHEME = dict(
-    bg=(0, 0, 0, 153),            # ListBG
-    selected_bg=(255, 255, 255, 25),  # SelectionBG
-    header_text=(255, 255, 255),  # BrightBaseText
-    divider=(120, 120, 120, 255), # BorderDark
-    team1=(255, 64, 64),          # Terrorists
-    team2=(112, 176, 255),        # Counter-Terrorists
-    team0=(200, 200, 200),        # spectators
-)
+RES = "/var/minis/mounts/xash/cstrike/resource/ClientScheme.res"
+
+# Built-in fallbacks, i.e. exactly what the C++ uses when the scheme has no key.
 AMBER = (255, 140, 0)
+BUILTIN = dict(
+    bg=(0, 0, 0, 153),
+    selected_bg=(255, 255, 255, 15),
+    header_text=AMBER,
+    divider=AMBER + (255,),
+    team1=None,   # falls back to GetTeamColor
+    team2=None,
+    team0=None,
+)
+# GetTeamColor equivalents (client built-in) for the fallback path
+GETTEAMCOLOR = {"T": (255, 63, 63), "CT": (153, 204, 255), "SPEC": (200, 200, 200)}
+
+# Real localized strings (cstrike_russian.txt / valve_russian.txt)
+L = dict(
+    ping="Пинг", deaths="Смертей", score="Счет",
+    money="Деньги", health="Здоровье",
+    kit="Набор сапера", dead="Убит", bomb="Бомба", vip="VIP",
+    ter="Террористы", ct="Контр-Террористы", spectators="Наблюдатели",
+    fmt_one="%s    -   %s игрок", fmt_many="%s    -   %s игроков",
+)
 
 
 def font(sz):
-    for p in FONT_CANDIDATES:
+    for p in FONTS:
         if os.path.exists(p):
             return ImageFont.truetype(p, sz)
     return ImageFont.load_default()
+
+
+def parse_scheme(path):
+    """Minimal reader matching cl_sb_scheme.cpp's behaviour for our keys."""
+    if not os.path.exists(path):
+        return {}
+    txt = open(path, encoding="utf-8", errors="replace").read()
+    out = {}
+    for key in ("ListBG", "SelectionBG", "BrightBaseText", "BaseText",
+                "BorderDark", "team0", "team1", "team2"):
+        # skip commented-out lines, take the first live definition
+        for m in re.finditer(r'^\s*"%s"\s+"([0-9 ]+)"' % key, txt, re.M):
+            nums = [int(v) for v in m.group(1).split()]
+            while len(nums) < 4:
+                nums.append(255)
+            out[key] = tuple(nums[:4])
+            break
+    return out
 
 
 def compute_geometry(scr_w, scr_h, charH, num_players, teamplay, num_teams,
@@ -63,25 +99,23 @@ def compute_geometry(scr_w, scr_h, charH, num_players, teamplay, num_teams,
     board_w = min(max(board_w, int(scr_w * 0.50)), int(scr_w * 0.95))
 
     if teamplay:
-        running_extent = 8.8 + 3.6 * num_teams + num_players
-        drawn_bottom = 3.6 * num_teams + num_players + 0.8
+        running = 8.8 + 3.6 * num_teams + num_players
+        bottom = 3.6 * num_teams + num_players + 0.8
     else:
-        running_extent = 4.8 + num_players
-        drawn_bottom = 2.8 + num_players
+        running = 4.8 + num_players
+        bottom = 2.8 + num_players
     if num_players <= 0:
-        running_extent, drawn_bottom = 4.8, 2.8
+        running, bottom = 4.8, 2.8
 
     charH = max(charH, 8)
     pad = min(max(charH // 3, 4), 12)
     natural = max(charH + pad, 15.0)
-    avail = scr_h * 0.92
-    fit = avail / running_extent if running_extent > 0 else natural
+    fit = (scr_h * 0.92) / running if running > 0 else natural
     pitch = max(min(natural, fit), 1.0)
 
-    board_h = int((drawn_bottom + 0.5) * pitch + 0.5)
+    board_h = int((bottom + 0.5) * pitch + 0.5)
     avail_h = int(scr_h * 0.95)
-    board_h = min(board_h, avail_h)
-    board_h = min(max(board_h, int(pitch * 4.0)), avail_h)
+    board_h = min(min(max(board_h, int(pitch * 4.0)), avail_h), avail_h)
 
     xstart = (scr_w - board_w) // 2
     ystart = max((scr_h - board_h) // 2, 0)
@@ -89,163 +123,211 @@ def compute_geometry(scr_w, scr_h, charH, num_players, teamplay, num_teams,
                 ystart=ystart, yend=ystart + board_h, pitch=pitch)
 
 
+# roster: name, frags, deaths, ping, money, hp, tag, bot
+ROSTER_T = [
+    ("KILLER",     31, 4,  12, 4200, 100, "",     False),
+    ("!defa",      24, 9,  15, 3150, 87,  "bomb", False),
+    ("Boss",       18, 11, 21, 800,  45,  "",     False),
+    ("GabeN",      15, 14, 18, 1600, 0,   "dead", False),
+    ("WASD",       12, 16, 0,  2300, 62,  "",     True),
+    ("Psycho",     9,  18, 24, 950,  33,  "",     False),
+    ("Albert",     7,  21, 19, 400,  100, "kit",  False),
+    ("theKing",    5,  23, 27, 6100, 71,  "",     False),
+]
+ROSTER_CT = [
+    ("Gunner",     28, 6,  14, 5200, 100, "",     False),
+    ("GoldPlayer", 22, 10, 16, 2750, 84,  "kit",  False),   # local player
+    ("Spaceman",   17, 12, 23, 1900, 55,  "",     False),
+    ("Gordon",     13, 15, 31, 3400, 0,   "dead", False),
+    ("Crazyf",     10, 17, 0,  1250, 91,  "",     True),
+    ("theBest",    8,  19, 26, 700,  40,  "vip",  False),
+    ("NoScope",    6,  22, 20, 2100, 68,  "",     False),
+    ("Ranger",     4,  24, 29, 500,  22,  "",     False),
+]
+LOCAL = "GoldPlayer"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--players", type=int, default=10)
-    ap.add_argument("--teams", type=int, default=2)
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--charh", type=int, default=13, help="GetCharHeight()")
-    ap.add_argument("--no-scheme", action="store_true",
-                    help="built-in palette (bloom_scoreboard_scheme 0)")
-    ap.add_argument("--show-kit", action="store_true",
-                    help="bloom_scoreboard_show_defusekit 1")
+    ap.add_argument("--no-scheme", action="store_true")
+    ap.add_argument("--show-kit", action="store_true")
     ap.add_argument("--out", default="/var/minis/attachments/sb_render.png")
     a = ap.parse_args()
 
-    use_scheme = not a.no_scheme
+    sch = {} if a.no_scheme else parse_scheme(RES)
+
+    def col_bg():
+        return sch.get("ListBG", BUILTIN["bg"])
+
+    def col_sel():
+        return sch.get("SelectionBG", BUILTIN["selected_bg"])
+
+    def col_hdr():
+        c = sch.get("BrightBaseText")
+        return c[:3] if c else AMBER
+
+    def col_div():
+        c = sch.get("BorderDark")
+        return c if c else BUILTIN["divider"]
+
+    def col_team(side):
+        key = {"T": "team1", "CT": "team2", "SPEC": "team0"}[side]
+        c = sch.get(key)
+        return c[:3] if c else GETTEAMCOLOR[side]
+
+    # split roster between the two teams like a server would
+    n = max(0, min(a.players, len(ROSTER_T) + len(ROSTER_CT)))
+    n_t = (n + 1) // 2
+    n_ct = n - n_t
+    teams = [("T", L["ter"], ROSTER_T[:n_t]), ("CT", L["ct"], ROSTER_CT[:n_ct])]
+    teams = [t for t in teams if t[2]]
+
     W, H = a.width, a.height
-    g = compute_geometry(W, H, a.charh, a.players, True, a.teams)
-    xstart, xend, ystart, yend = g["xstart"], g["xend"], g["ystart"], g["yend"]
-    pitch = g["pitch"]
+    g = compute_geometry(W, H, a.charh, n, True, len(teams))
+    xstart, xend, ystart, yend, pitch = (g["xstart"], g["xend"], g["ystart"],
+                                         g["yend"], g["pitch"])
 
-    FS = max(9, int(a.charh * 0.95))
-    FN = font(FS)
-    img = Image.new("RGBA", (W, H), (44, 58, 44, 255))
+    FN = font(max(9, int(a.charh * 0.95)))
+    img = Image.new("RGBA", (W, H), (48, 54, 42, 255))
     d0 = ImageDraw.Draw(img)
-    for i in range(0, W, 64):                      # faint map-ish backdrop
-        d0.line([(i, 0), (i + 30, H)], fill=(52, 68, 52, 255), width=22)
+    for i in range(0, W, 70):                      # backdrop so alpha is visible
+        d0.line([(i, 0), (i + 34, H)], fill=(58, 66, 50, 255), width=26)
 
-    # panel (translucent, composited so alpha is real)
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    dl = ImageDraw.Draw(layer, "RGBA")
-    bg = SCHEME["bg"] if use_scheme else (0, 0, 0, 153)
-    dl.rectangle([xstart, ystart, xend - 1, yend - 1], fill=bg)
-    dl.rectangle([xstart, ystart, xend - 1, yend - 1],
-                 outline=(255, 255, 255, 40))       # m_bDrawStroke
-    img.alpha_composite(layer)
     d = ImageDraw.Draw(img, "RGBA")
 
     def tw(s):
         return int(d.textlength(s, font=FN))
 
+    # ---- DrawRectangleExt: fill (blended) + stroke inset by cornerRadius ----
+    CR = 2
+    lay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    dl = ImageDraw.Draw(lay, "RGBA")
+    dl.rectangle([xstart, ystart, xend - 1, yend - 1], fill=col_bg())
+    img.alpha_composite(lay)
+
+    wide, tall = xend - xstart, yend - ystart
+    st = col_div()[:3] + (255,)
+    d.rectangle([xstart + CR, ystart, xstart + wide - CR - 1, ystart], fill=st)
+    d.rectangle([xstart, ystart + CR, xstart, ystart + tall - CR - 1], fill=st)
+    d.rectangle([xstart + wide - 1, ystart + CR,
+                 xstart + wide - 1, ystart + tall - CR - 1], fill=st)
+    d.rectangle([xstart + CR, ystart + tall - 1,
+                 xstart + wide - CR - 1, ystart + tall - 1], fill=st)
+
     # ---- columns, exactly as DrawScoreboard computes them ----
     class Col:
-        def __init__(self, start, name=None):
-            self.start = start
-            self.name = name
-            self.end = start - (tw(name) if name else 0)
+        def __init__(self, start, name=None, reverse=True):
+            self.start, self.name = start, name
+            if name:
+                self.end = start - tw(name) if reverse else start + tw(name)
+            else:
+                self.end = start
 
-    ping = Col(xend - 15, "Ping");            ping.end = min(ping.end, ping.start - tw("9999"))
-    deaths = Col(ping.end - 10, "Deaths");    deaths.end = min(deaths.end, deaths.start - tw("9999"))
-    kills = Col(deaths.end - 10, "Score");    kills.end = min(kills.end, kills.start - tw("9999"))
-    money = Col(kills.end - 10, "Money");     money.end = min(money.end, money.start - tw("$999999"))
-    hp = Col(money.end - 10, "Health");       hp.end = min(hp.end, hp.start - tw("999999"))
-    attrib = Col(hp.end - 10);                attrib.end = attrib.start - tw("Has Defuse Kit")
-    name_start = xstart + 15
-    name_end = attrib.end - 10
+    ping = Col(xend - 15, L["ping"])
+    ping.end = min(ping.end, ping.start - tw("9999"))
+    deaths = Col(ping.end - 10, L["deaths"])
+    deaths.end = min(deaths.end, deaths.start - tw("9999"))
+    kills = Col(deaths.end - 10, L["score"])
+    kills.end = min(kills.end, kills.start - tw("9999"))
+    money = Col(kills.end - 10, L["money"])
+    money.end = min(money.end, money.start - tw("$999999"))
+    hp = Col(money.end - 10, L["health"])
+    hp.end = min(hp.end, hp.start - tw("999999"))
+    attrib = Col(hp.end - 10)
+    attrib.end = attrib.start - tw(L["kit"])
+    name_col_start = xstart + 15
 
-    hdr = SCHEME["header_text"] if use_scheme else AMBER
-    div = SCHEME["divider"] if use_scheme else AMBER + (255,)
+    def rev(s, right_x, y, col):
+        """DrawHudStringReverse: text ends at right_x."""
+        d.text((right_x - tw(s), y), s, font=FN, fill=tuple(col) + (255,))
 
-    def right_text(s, right_x, y, col):
-        d.text((right_x - tw(s), y), s, font=FN, fill=col + (255,) if len(col) == 3 else col)
+    hdr = col_hdr()
 
-    # ---- header row (slot 0, +5px) ----
+    # ---- header row: slot 0, +5px ----
     slot = 0.0
     ypos = ystart + int(slot * pitch) + 5
-    d.text((name_start, ypos), "de_dust2 — Bloom Server", font=FN, fill=hdr + (255,))
+    d.text((name_col_start, ypos), "Bloom Dedicated Server", font=FN,
+           fill=hdr + (255,))
     for c in (hp, money, kills, deaths, ping):
-        right_text(c.name, c.start, ypos, hdr)
+        rev(c.name, c.start, ypos, hdr)
 
-    # ---- separator (slot 2) ----
+    # ---- separator at slot 2 ----
     slot += 2
     ypos = ystart + int(slot * pitch)
-    d.rectangle([xstart, ypos, xend - 1, ypos], fill=div)
+    d.rectangle([xstart, ypos, xend - 1, ypos], fill=col_div())
     slot += 0.8
 
-    ROSTER = [
-        ("KILLER",     31, 4, 12, 4200, 100, ""),
-        ("Gunner",     24, 9, 15, 3150, 87,  ""),
-        ("theKing",    18, 11, 21, 800,  45,  "Bomb"),
-        ("GabeN",      15, 14, 18, 1600, 0,   "Dead"),
-        ("Spaceman",   12, 16, 22, 2300, 62,  ""),
-        ("Boss",       9,  18, 24, 950,  33,  ""),
-        ("WASD",       7,  21, 19, 400,  100, "VIP"),
-        ("Gordon",     5,  23, 27, 6100, 71,  ""),
-        ("!defa",      3,  25, 30, 1200, 12,  ""),
-        ("GoldPlayer", 1,  28, 33, 750,  100, ""),
-        ("Albert",     0,  30, 31, 300,  55,  ""),
-        ("Crazyf",     0,  31, 29, 150,  8,   ""),
-    ]
-    per_team = a.players // max(a.teams, 1)
-    leftover = a.players % max(a.teams, 1)
-    team_defs = [("Terrorists", SCHEME["team1"] if use_scheme else (255, 64, 64)),
-                 ("Counter-Terrorists", SCHEME["team2"] if use_scheme else (112, 176, 255))]
-
-    idx = 0
     clipped = 0
-    for t in range(min(a.teams, len(team_defs))):
-        tname, tcol = team_defs[t]
-        members = per_team + (1 if t < leftover else 0)
+    for side, tname, members in teams:
+        tc = col_team(side)
 
         ypos = ystart + int(slot * pitch)
         if ypos > yend:
             clipped += 1
             break
-        label = "%s    -   %d player%s" % (tname, members, "" if members == 1 else "s")
-        d.text((name_start, ypos + 2), label, font=FN, fill=tcol + (255,))
-        right_text(str(sum(r[1] for r in ROSTER[idx:idx + members])), kills.start, ypos + 2, tcol)
-        right_text(str(30 + t * 7), ping.start, ypos + 2, tcol)
+        fmt = L["fmt_one"] if len(members) == 1 else L["fmt_many"]
+        d.text((name_col_start, ypos), fmt % (tname, len(members)), font=FN,
+               fill=tuple(tc) + (255,))
+        rev(str(sum(m[1] for m in members)), kills.start, ypos, tc)
+        rev(str(sum(m[3] for m in members) // max(len(members), 1)),
+            ping.start, ypos, tc)
 
         slot += 1.2
         uy = ystart + int(slot * pitch)
-        d.rectangle([xstart, uy, xend - 1, uy], fill=tcol + (255,))
+        d.rectangle([xstart, uy, xend - 1, uy], fill=tuple(tc) + (255,))
         slot += 0.4
 
-        for m in range(members):
-            r = ROSTER[idx % len(ROSTER)]
-            idx += 1
-            py = ystart + int(slot * pitch)
-            if py > yend:
+        for (nm, frags, dths, png, mny, hpv, tag, bot) in members:
+            ypos = ystart + int(slot * pitch)
+            if ypos > yend:
                 clipped += 1
                 break
 
-            nm, frags, deaths_v, ping_v, money_v, hpv, attr = r
-            col = tcol
-            if attr == "Dead":                      # dead rows dim to 0.42
-                col = tuple(max(int(c * 0.42), 35) for c in tcol)
-
-            is_local = (nm == "GoldPlayer")
-            if is_local:
+            if nm == LOCAL:
                 band = max(int(pitch), 1)
-                sel = SCHEME["selected_bg"] if use_scheme else (255, 255, 255, 15)
                 lay = Image.new("RGBA", img.size, (0, 0, 0, 0))
                 ImageDraw.Draw(lay, "RGBA").rectangle(
-                    [xstart, py, xend - 1, py + band - 1], fill=sel)
+                    [xstart, ypos, xend - 1, ypos + band - 1], fill=col_sel())
                 img.alpha_composite(lay)
 
-            d.text((name_start + 10, py + 2), nm, font=FN, fill=col + (255,))
-            if attr:
-                if attr == "Has Defuse Kit" and not a.show_kit:
-                    pass
-                else:
-                    right_text(attr, attrib.start, py + 2, col)
-            if hpv > 0 and attr != "Dead":
-                right_text(str(hpv), hp.start, py + 2, col)
-            right_text("$%d" % money_v, money.start, py + 2, col)
-            right_text(str(frags), kills.start, py + 2, col)
-            right_text(str(deaths_v), deaths.start, py + 2, col)
-            right_text(str(ping_v), ping.start, py + 2, col)
+            # name: COL_NAME.start + nameoffset(10) for team members
+            d.text((name_col_start + 10, ypos), nm, font=FN,
+                   fill=tuple(tc) + (255,))
+
+            # attrib column: dead > bomb > vip > kit (kit gated by cvar)
+            if tag == "dead":
+                rev(L["dead"], attrib.start, ypos, tc)
+            elif tag == "bomb":
+                rev(L["bomb"], attrib.start, ypos, tc)
+            elif tag == "vip":
+                rev(L["vip"], attrib.start, ypos, tc)
+            elif tag == "kit" and a.show_kit:
+                rev(L["kit"], attrib.start, ypos, tc)
+
+            # HP only when known and alive
+            if hpv >= 0 and tag != "dead":
+                rev(str(hpv), hp.start, ypos, tc)
+            rev("$%d" % mny, money.start, ypos, tc)
+            rev(str(frags), kills.start, ypos, tc)
+            rev(str(dths), deaths.start, ypos, tc)
+            rev("BOT" if bot else str(png), ping.start, ypos, tc)
 
             slot += 1.0
         slot += 2.0
 
     img.convert("RGB").save(a.out)
     print("players=%d teams=%d  panel=%dx%d at (%d,%d)  pitch=%.1f  scheme=%s"
-          % (a.players, a.teams, xend - xstart, yend - ystart, xstart, ystart,
-             pitch, "on" if use_scheme else "off"))
-    print("clipped rows: %d  (must be 0)" % clipped)
+          % (n, len(teams), xend - xstart, yend - ystart, xstart, ystart, pitch,
+             "off" if a.no_scheme else "ClientScheme.res"))
+    if not a.no_scheme:
+        print("  ListBG=%s SelectionBG=%s BorderDark=%s team1=%s team2=%s"
+              % (sch.get("ListBG"), sch.get("SelectionBG"), sch.get("BorderDark"),
+                 sch.get("team1"), sch.get("team2")))
+    print("clipped rows: %d (must be 0)" % clipped)
     print("saved", a.out)
 
 

@@ -335,6 +335,10 @@ int CHudScoreboard :: Init( void )
 	cl_showplayerversion = CVAR_CREATE( "cl_showplayerversion", "0", 0 );
 	cl_show_scoreboard_on_death = CVAR_CREATE( "cl_show_scoreboard_on_death", "0", FCVAR_ARCHIVE );
 
+	// 0 = this board never draws, 1 = only when explicitly asked for while the
+	// engine draws its own (default), 2 = stock behaviour. See ShouldDrawScoreboard.
+	m_pCvarStockBoard = CVAR_CREATE( "bloom_stock_scoreboard", "1", FCVAR_ARCHIVE );
+
 	// --- Bloom board: appearance from ClientScheme.res -------------------
 	// 1 = read the file (default), 0 = keep the compiled-in palette.
 	s_pCvarScheme     = CVAR_CREATE( "bloom_scoreboard_scheme", "1", FCVAR_ARCHIVE );
@@ -360,6 +364,10 @@ int CHudScoreboard :: VidInit( void )
 	ystart = 100;
 	yend = ScreenHeight - ystart;
 	m_bForceDraw = false;
+
+	// Re-read ClientScheme.res on video restart / level load, so editing the
+	// file takes effect without restarting the game. Cheap: one small file.
+	Scoreboard_InvalidateScheme();
 
 	// Load sprites here
 	return 1;
@@ -394,14 +402,53 @@ void CHudScoreboard :: InitHUDData( void )
 	Scoreboard_InvalidateScheme();
 }
 
+// Does the engine draw a scoreboard of its own right now?
+//
+// Read through the cvar, not a compile-time switch, because this client also
+// runs on a stock engine. CVAR_GET_FLOAT answers 0 for a name nobody
+// registered, so an engine without the Bloom board reads as "no" and nothing
+// below suppresses anything -- never take away the only board the player has.
+//
+// Both names are checked because the engine-side cvar is being renamed from
+// slayer_* to bloom_*; during the transition either one may be the live one.
+static bool EngineDrawsOwnScoreboard( void )
+{
+	return CVAR_GET_FLOAT( "bloom_scoreboard" ) != 0.0f
+	    || CVAR_GET_FLOAT( "slayer_scoreboard" ) != 0.0f;
+}
+
 bool CHudScoreboard :: ShouldDrawScoreboard() const
 {
+	// bloom_stock_scoreboard: 0 = never draw this board, 1 = draw it only when
+	// asked for while the engine draws its own (default), 2 = stock behaviour.
+	const int mode = m_pCvarStockBoard ? (int)m_pCvarStockBoard->value : 1;
+
+	if( mode == 0 )
+		return false;
+
+	// showscoreboard2 comes from the server or a mod and carries its own
+	// geometry, so it is honoured in every mode but the hard off: it is used for
+	// round-end panels, not as the TAB board.
 	if( m_bForceDraw )
 		return true;
+
+	if( mode == 1 && EngineDrawsOwnScoreboard( ))
+	{
+		// Two-boards-at-once guard. Intermission and (optionally) death show this
+		// board without any key press, and the engine's board handles both cases
+		// itself -- so on a Bloom engine ours ended up framing the engine's one
+		// (ours spans ~0.72 of the width, so it surrounds rather than hides).
+		//
+		// A held key still draws it: someone who bound +showscores asked for this
+		// board specifically, and that binding must keep working.
+		return m_bShowscoresHeld;
+	}
 
 	if( m_bShowscoresHeld || gHUD.m_iIntermission )
 		return true;
 
+	// Kept from upstream: showing the board on death is opt-in via cvar rather
+	// than hardcoded, so a player who does not want it can turn it off.
 	if( cl_show_scoreboard_on_death && cl_show_scoreboard_on_death->value && gHUD.m_Health.m_iHealth <= 0 )
 		return true;
 
@@ -420,14 +467,29 @@ int CHudScoreboard :: Draw( float flTime )
 
 	if( !m_bForceDraw )
 	{
-		xstart     = 0.125f * ScreenWidth;
-		xend       = ScreenWidth - xstart;
-		ystart     = 90;
-		yend       = ScreenHeight - ystart;
-		m_colors.r = 0;
-		m_colors.g = 0;
-		m_colors.b = 0;
-		m_colors.a = 153;
+		// Panel geometry (xstart/xend/ystart/yend) is computed per-roster in
+		// DrawScoreboard, after GetAllPlayersInfo() knows how many players there
+		// are. Here we only set the fill colour, which does not depend on it.
+		// The stale 0.125*ScreenWidth / ystart 90 box that used to be assigned
+		// here is gone on purpose: it would be overwritten a moment later, and
+		// leaving it in made it look like the board was still fixed-size.
+		if( !s_scheme_tried )
+			Scoreboard_LoadScheme();
+
+		if( s_scheme.have & SB_SCHEME_HAS_BG )
+		{
+			m_colors.r = s_scheme.bg[0];
+			m_colors.g = s_scheme.bg[1];
+			m_colors.b = s_scheme.bg[2];
+			m_colors.a = s_scheme.bg[3];
+		}
+		else
+		{
+			m_colors.r = 0;
+			m_colors.g = 0;
+			m_colors.b = 0;
+			m_colors.a = 153;
+		}
 		m_bDrawStroke = true;
 	}
 
@@ -445,21 +507,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 		Scoreboard_LoadScheme();
 
 	// Size the panel to the current roster (adaptive width + row pitch), unless
-	// showscoreboard2 supplied its own geometry via m_bForceDraw.
+	// showscoreboard2 supplied its own geometry via m_bForceDraw. The fill colour
+	// was already picked in Draw(); it does not depend on the roster.
 	if( !m_bForceDraw )
 	{
 		int roster_players = 0, roster_teams = 0;
 		Scoreboard_CountRoster( roster_players, roster_teams );
 		Scoreboard_ComputeGeometry( roster_players, gHUD.m_Teamplay != 0, roster_teams );
-
-		// Panel fill from the scheme's ListBG when the file provides one.
-		if( s_scheme.have & SB_SCHEME_HAS_BG )
-		{
-			m_colors.r = s_scheme.bg[0];
-			m_colors.g = s_scheme.bg[1];
-			m_colors.b = s_scheme.bg[2];
-			m_colors.a = s_scheme.bg[3] ? s_scheme.bg[3] : 153;
-		}
 	}
 
 //	Packetloss removed on Kelly 'shipping nazi' Bailey's orders
@@ -496,8 +550,21 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 
 	// print the heading line
 
-	DrawUtils::DrawRectangle(xstart, ystart, xend - xstart, yend - ystart,
-		m_colors.r, m_colors.g, m_colors.b, m_colors.a, m_bDrawStroke);
+	// Panel frame: stroke colour from the scheme's BorderDark when the file
+	// provides one, else the historic amber. Corners are left open (inset by
+	// cornerRadius) so the frame reads as a rounded panel rather than a hard box.
+	{
+		int fr = 255, fg = 140, fb = 0;
+		if( s_scheme.have & SB_SCHEME_HAS_DIVIDER )
+		{
+			fr = s_scheme.divider[0];
+			fg = s_scheme.divider[1];
+			fb = s_scheme.divider[2];
+		}
+		DrawUtils::DrawRectangleExt( xstart, ystart, xend - xstart, yend - ystart,
+			m_colors.r, m_colors.g, m_colors.b, m_colors.a,
+			fr, fg, fb, m_bDrawStroke, 2 );
+	}
 
 	int ypos = ystart + (int)(list_slot * s_rowPitch) + 5;
 
