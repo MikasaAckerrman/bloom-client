@@ -101,18 +101,18 @@ static inline void kf_anim_state( float ageMs, float deathAgeMs,
 	float alpha = 1.0f;
 	float dx = 0.0f;
 
-	if( ageMs < enterMs )
-	{
-		float p = kf_ease_out( ageMs / enterMs );
-		alpha = p;
-		dx = slidePx * ( 1.0f - p );
-	}
+	/* ENTER: CS2 does not slide rows in — a new row simply appears at full
+	 * opacity (older rows shove up instantly). The user asked for exactly this,
+	 * so there is no enter animation: alpha starts at 1 and dx stays 0. */
+	(void)ageMs; (void)enterMs; (void)slidePx;
+
+	/* EXIT: rows fade out as they expire (also how the top row disappears when
+	 * the feed overflows). Kept, no horizontal drift. */
 	if( deathAgeMs > 0.0f )
 	{
 		float p = deathAgeMs / exitMs;
 		if( p > 1.0f ) p = 1.0f;
 		alpha = 1.0f - p;
-		dx = slidePx * 0.4f * p;
 	}
 	if( alpha < 0.0f ) alpha = 0.0f;
 	*alphaOut = alpha;

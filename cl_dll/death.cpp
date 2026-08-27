@@ -121,6 +121,27 @@ cvar_t *cl_killsound_path;
 #define KF_ENTER_MS    180.0f
 #define KF_EXIT_MS     220.0f
 
+// Killfeed-specific team name colours, MEASURED from the approved reference
+// (screenshot 1000312966.png glyph cores). The engine-wide g_ColorBlue/g_ColorRed
+// are shared with chat/statusbar/scoreboard, so we keep our own here to avoid
+// tinting the rest of the HUD. CT = steel blue, T = amber/gold.
+static vec3_t s_kfColorCT = { 129.0f/255.0f, 154.0f/255.0f, 202.0f/255.0f };
+static vec3_t s_kfColorT  = { 221.0f/255.0f, 195.0f/255.0f, 135.0f/255.0f };
+static vec3_t s_kfColorGrey = { 0.8f, 0.8f, 0.8f };
+
+// Team colour for the killfeed only (mirrors GetClientColor's team mapping).
+static float *KF_TeamColor( int clientIndex )
+{
+	if( clientIndex <= 0 || clientIndex > MAX_PLAYERS )
+		return s_kfColorGrey;
+	switch( g_PlayerExtraInfo[clientIndex].teamnumber )
+	{
+	case TEAM_CT:        return s_kfColorCT;
+	case TEAM_TERRORIST: return s_kfColorT;
+	default:             return s_kfColorGrey;
+	}
+}
+
 static inline int kf_min( int a, int b ) { return a < b ? a : b; }
 static inline int kf_max( int a, int b ) { return a > b ? a : b; }
 
@@ -135,7 +156,7 @@ int CHudDeathNotice :: Init( void )
 	cl_killsound_path = CVAR_CREATE( "cl_killsound_path", "buttons/bell1.wav", FCVAR_ARCHIVE );
 	cl_killfeed = CVAR_CREATE( "cl_killfeed", "1", FCVAR_ARCHIVE );
 	cl_killfeed_time = CVAR_CREATE( "cl_killfeed_time", "6", FCVAR_ARCHIVE );
-	cl_killfeed_scale = CVAR_CREATE( "cl_killfeed_scale", "1.0", FCVAR_ARCHIVE );
+	cl_killfeed_scale = CVAR_CREATE( "cl_killfeed_scale", "0.8", FCVAR_ARCHIVE );
 	m_iFlags = 0;
 
 	return 1;
@@ -620,7 +641,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	}
 	else
 	{
-		rgDeathNoticeList[i].KillerColor = GetClientColor( killer );
+		rgDeathNoticeList[i].KillerColor = KF_TeamColor( killer );
 		strlcpy( rgDeathNoticeList[i].szKiller, killer_name, sizeof( rgDeathNoticeList[i].szKiller ) );
 	}
 
@@ -639,14 +660,14 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	}
 	else
 	{
-		rgDeathNoticeList[i].VictimColor = GetClientColor( victim );
+		rgDeathNoticeList[i].VictimColor = KF_TeamColor( victim );
 		strlcpy( rgDeathNoticeList[i].szVictim, victim_name, sizeof( rgDeathNoticeList[i].szVictim ) );
 	}
 
 	// Assister
 	if( assister >= 1 && assister <= MAX_PLAYERS && g_PlayerInfoList[assister].name )
 	{
-		rgDeathNoticeList[i].AssisterColor = GetClientColor( assister );
+		rgDeathNoticeList[i].AssisterColor = KF_TeamColor( assister );
 		strlcpy( rgDeathNoticeList[i].szAssister, g_PlayerInfoList[assister].name, sizeof( rgDeathNoticeList[i].szAssister ) );
 	}
 
