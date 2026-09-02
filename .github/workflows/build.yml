@@ -5,6 +5,16 @@ concurrency:
   group: continuous
   cancel-in-progress: true
 
+# ANDROID ONLY.
+#
+# The Windows / Linux / macOS / PS Vita jobs were removed: this fork is an
+# Android client and nothing else is shipped from here. Keeping them cost ~6
+# runners per push and the PS Vita job failed unconditionally (its SDK bootstrap
+# step, scripts/psvita_sdk.sh, broke), which in turn blocked the release job
+# because that job listed every platform in `needs`.
+#
+# If a desktop build is ever needed again, the CMake presets for it are still in
+# CMakePresets.json -- only the CI jobs are gone.
 jobs:
   android:
     name: Android
@@ -17,7 +27,6 @@ jobs:
           submodules: recursive
       - name: Install dependencies
         run: |
-          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install ccache
       - name: Setup Java
@@ -50,193 +59,37 @@ jobs:
             mv app/build/outputs/apk/git/debug/app-git-debug.apk CS16Client-Android.apk
           fi
         working-directory: android
+      # The game data (sprites, configs, bot profiles) is delivered through the
+      # APK's assets. Fail loudly if it is missing: an APK that installs and runs
+      # but silently has no killfeed sprites is worse than a red build.
+      - name: Verify game assets are packaged
+        run: |
+          set -e
+          apk=android/CS16Client-Android.apk
+          missing=0
+          for f in sprites/kf/awp.spr sprites/kf/headshot.spr sprites/kf/plus.spr \
+                   BotProfile.db; do
+            if unzip -l "$apk" | grep -q "assets/$f"; then
+              echo "ok   assets/$f"
+            else
+              echo "MISSING assets/$f"
+              missing=$((missing+1))
+            fi
+          done
+          kf=$(unzip -l "$apk" | grep -c 'assets/sprites/kf/.*\.spr' || true)
+          echo "killfeed sprites in APK: $kf"
+          [ "$kf" -ge 38 ] || { echo "expected >= 38 killfeed sprites"; missing=$((missing+1)); }
+          [ "$missing" -eq 0 ] || { echo "FAILED: $missing asset check(s)"; exit 1; }
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Android
           path: android/CS16Client-Android.apk
-  psvita:
-    name: PS Vita
-    runs-on: ubuntu-latest
-    env:
-      VITASDK: ${{ github.homedir }}/vitasdk
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-          submodules: recursive
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install libatomic1 libgcc-s1 \
-            libstdc++6 gcc-multilib g++-multilib \
-            ninja-build libfontconfig-dev ccache
-      - name: Setup VitaSDK cache
-        id: cache-vitasdk
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.VITASDK }}
-          key: VitaSDK-cache-${{ hashFiles('scripts/psvita_sdk.sh') }}
-          restore-keys: |
-            VitaSDK-cache-${{ github.ref_name }}
-            VitaSDK-cache-
-      - name: Setup VitaSDK
-        if: steps.cache-vitasdk.outputs.cache-hit != 'true'
-        run: |
-          scripts/psvita_sdk.sh
-      - name: Setup compilation cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: PSVita-ccache-${{ github.sha }}
-          restore-keys: |
-            PSVita-ccache-${{ github.ref_name }}
-            PSVita-ccache-
-      - name: Configure CMake
-        run: |
-          echo "${{ env.VITASDK }}/bin" >> $GITHUB_PATH
-          cmake --preset "psvita-release" \
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - name: Generate configuration files
-        working-directory: build
-        run: ${{ github.workspace }}/scripts/psvita_generate_configs.sh
-      - name: Build and Package
-        working-directory: build
-        run: |
-          cmake --build . --parallel $(nproc)
-          cpack --config CPackConfig.cmake
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: PSVita
-          path: build/*.zip
-  windows:
-    name: Windows
-    runs-on: windows-latest
-    env:
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-    strategy:
-      matrix:
-        arch: [ 'x86', 'amd64' ]
-      fail-fast: false
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-          submodules: recursive
-      - name: Setup Visual Studio
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch }}
-      - name: Setup compilation cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SCCACHE_DIR }}
-          key: sccache-${{ runner.os }}-${{ matrix.arch }}-${{ github.sha }}
-          restore-keys: |
-            sccache-${{ runner.os }}-${{ matrix.arch }}-${{ github.ref_name }}
-            sccache-${{ runner.os }}-${{ matrix.arch }}-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-      - name: Configure
-        run: cmake -DCMAKE_POLICY_DEFAULT_CMP0141=NEW --preset "win32-ci-${{ matrix.arch }}"
-      - name: Build and Package
-        run: |
-          cmake --build .
-          cpack --config CPackConfig.cmake
-        working-directory: build
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ runner.os }}-${{ matrix.arch }}
-          path: build/*.zip
-  linux:
-    name: Linux
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [ 'i386', 'amd64' ]
-      fail-fast: false
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-          submodules: recursive
-      - name: Install dependencies
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install libatomic1:i386 libgcc-s1:i386 \
-            libstdc++6:i386 gcc-multilib g++-multilib \
-            ninja-build libfontconfig-dev:i386 libfontconfig-dev ccache
-      - name: Setup compilation cache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-${{ matrix.arch }}-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-ccache-${{ github.ref_name }}
-            ${{ runner.os }}-${{ matrix.arch }}-ccache-
-      - name: Configure
-        run: cmake --preset "linux-ci-${{ matrix.arch }}"
-      - name: Build and Package
-        run: |
-          cmake --build .
-          cpack --config CPackConfig.cmake
-        working-directory: build
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ runner.os }}-${{ matrix.arch }}
-          path: build/*.tar.gz
-  macos:
-    name: macOS
-    strategy:
-      matrix:
-        os: [ 'macos-15-intel', 'macos-latest' ]
-        arch: [ 'x86_64', 'arm64' ]
-        exclude:
-          - os: macos-15-intel
-            arch: arm64
-          - os: macos-latest
-            arch: x86_64
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-          submodules: recursive
-      - name: Install dependencies
-        run: brew install cmake ninja fontconfig ccache
-      - name: Setup compilation cache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-${{ matrix.arch }}-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-ccache-${{ github.ref_name }}
-            ${{ runner.os }}-${{ matrix.arch }}-ccache-
-      - name: Configure
-        run: cmake --preset "macos-ci-${{ matrix.arch }}"
-      - name: Build and Package
-        run: |
-          cmake --build .
-          cpack --config CPackConfig.cmake
-        working-directory: build
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ runner.os }}-${{ matrix.arch }}
-          path: build/*.zip
   release:
     name: Release
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && always()
-    needs: [ android, windows, linux, psvita, macos ]
+    needs: [ android ]
     steps:
       - name: Fetch artifacts
         uses: actions/download-artifact@v4

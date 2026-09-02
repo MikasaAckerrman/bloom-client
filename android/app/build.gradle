@@ -33,6 +33,31 @@ android {
 		abortOnError = false
 	}
 
+	// Game data (sprites, bot profiles, configs, YaPB navigation graphs) ships in
+	// the APK's assets. Point Gradle straight at the source directories instead of
+	// copying them into src/main/assets first.
+	//
+	// The copy used to be done by CMake's configure step, which CANNOT work:
+	// Gradle runs mergeAssets BEFORE configuring CMake (checked against a CI log:
+	// mergeGitDebugAssets is task #433, configureCMakeDebug[arm64-v8a] is #447).
+	// On a clean checkout the assets were therefore packaged from a directory that
+	// did not exist yet, so every CI APK shipped with NO game data -- verified by
+	// unzipping two published artifacts, both had 0 asset entries. It only looked
+	// fine locally because the directory lingered from an earlier build.
+	//
+	// The graphs are downloaded by scripts/yapb_graph_dl.py into the CMake build
+	// dir, which is not known here, so they are fetched into a fixed path under
+	// the module's build dir by the task below.
+	sourceSets {
+		named("main") {
+			assets.srcDirs += [
+				file("../../3rdparty/cs16client-extras"),
+				file("../../3rdparty/yapb/cfg"),
+				file("${layout.buildDirectory.get().asFile}/generated/yapb-graphs")
+			]
+		}
+	}
+
 	packaging {
 		jniLibs {
 			keepDebugSymbols.add("**/*.so")
@@ -98,6 +123,37 @@ android {
 
 	buildFeatures {
 		buildConfig = true
+	}
+}
+
+// Download the YaPB navigation graphs into a fixed directory that sourceSets can
+// reference, and make asset merging depend on it. scripts/yapb_graph_dl.py skips
+// files it already has, so repeat runs are cheap; a failed download is
+// non-fatal (the script prints and continues), which matches how the CMake path
+// behaved.
+//
+// Declared as an Exec task rather than calling exec {} inside doLast: on Gradle
+// 8.13 (this project's wrapper) invoking Project.exec at execution time is
+// unsupported and breaks the configuration cache.
+def yapbGraphsDir = layout.buildDirectory.dir("generated/yapb-graphs")
+
+def fetchYapbGraphs = tasks.register("fetchYapbGraphs", Exec) {
+	description = "Fetch YaPB navigation graphs into the assets staging dir"
+	outputs.dir(yapbGraphsDir)
+	def graphDir = yapbGraphsDir.map { it.dir("addons/yapb/data/graph") }
+	doFirst {
+		graphDir.get().asFile.mkdirs()
+	}
+	commandLine(
+		System.getenv("PYTHON") ?: "python3",
+		file("../../scripts/yapb_graph_dl.py").absolutePath,
+		graphDir.get().asFile.absolutePath
+	)
+}
+
+tasks.configureEach { task ->
+	if (task.name.startsWith("merge") && task.name.endsWith("Assets")) {
+		task.dependsOn(fetchYapbGraphs)
 	}
 }
 

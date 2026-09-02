@@ -88,16 +88,20 @@ set(EXTRAS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cs16client-extras")
 set(YAPB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/yapb/cfg")
 
 if(ANDROID)
-	set(EXTRAS_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets")
-
-	file(GLOB EXTRAS_FILES "${EXTRAS_DIR}/*")
-	file(GLOB YAPB_FILES "${YAPB_DIR}/*" "${GRAPHS_OUTPUT}/*")
-
-	file(REMOVE_RECURSE ${EXTRAS_OUTPUT})
-	file(
-		COPY ${EXTRAS_FILES} ${YAPB_FILES}
-		DESTINATION ${EXTRAS_OUTPUT}
-	)
+	# NOTHING to do here. The Android game data is delivered by Gradle, which
+	# registers cs16client-extras / yapb cfg / the downloaded graphs directly as
+	# assets source dirs (android/app/build.gradle).
+	#
+	# This used to file(COPY ...) them into android/app/src/main/assets, and that
+	# could never work: Gradle runs mergeAssets BEFORE it configures CMake
+	# (verified in a CI log -- mergeGitDebugAssets is task #433, the first
+	# configureCMakeDebug is #447). So on a clean checkout the copy landed after
+	# the assets had already been packaged, and EVERY CI APK shipped with no game
+	# data at all. Locally it appeared to work only because the directory
+	# survived from a previous build.
+	#
+	# It also did file(REMOVE_RECURSE) on a path inside the SOURCE tree, which is
+	# a bad thing for a configure step to do.
 else()
 	set(EXTRAS_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/extras.pk3")
 
