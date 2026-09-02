@@ -36,36 +36,82 @@
 float color[3];
 
 // One modifier-icon sprite per kf_icon_slot (see killfeed_layout.h).
+// Names are GoldClient's own d_*.tga stems (see scripts/kf_tga2spr.py).
 static const char *kf_mod_names[KFI_COUNT] =
 {
-	"blind",        // KFI_BLIND
-	"inair",        // KFI_INAIR
+	"blind_kill",   // KFI_BLIND
+	"inair_kill",   // KFI_INAIR
 	"noscope",      // KFI_NOSCOPE
-	"smoke",        // KFI_SMOKE
+	"smoke_kill",   // KFI_SMOKE
 	"penetrate",    // KFI_PENETRATE
 	"headshot",     // KFI_HEADSHOT
-	"flashbang_assist" // KFI_FLASHASSIST
+	"plus",         // KFI_PLUS
+	"assist_flash", // KFI_FLASHASSIST
+	"domination",   // KFI_DOMINATION
+	"revenge"       // KFI_REVENGE
 };
 
-// Weapon icon table. The server sends the killer weapon name with weapon_/
-// monster_/func_ already stripped (see ReGameDLL GetKillerWeaponName), so we
-// match the bare name and map a few CS aliases onto our sprite files.
+// Weapon icon table. VERIFIED against the ReGameDLL submodule vendored here
+// (3rdparty/ReGameDLL_CS @ 5.20.0.492-367-g7be9d59), not guessed:
+//
+//   * the msg name is what CBasePlayer::GetKillerWeaponName() produces
+//     (player.cpp:824): either m_pActiveItem->pszName() or the inflictor's
+//     classname, with a leading "weapon_" / "monster_" / "func_" stripped.
+//   * the real classnames are the LINK_ENTITY_TO_CLASS(weapon_*) list:
+//     ak47 aug awp c4 deagle elite famas fiveseven flashbang g3sg1 galil
+//     glock18 hegrenade knife m249 m3 m4a1 mac10 mp5navy p228 p90 scout sg550
+//     sg552 shield smokegrenade tmp ump45 usp xm1014
+//     Note it is "glock18", never "glock": the short form only appears in
+//     weapontype.cpp's buy-alias table, which never reaches DeathMsg.
+//   * "world" is GetKillerWeaponName's default when there is no client killer,
+//     so a fall or a map hazard arrives under that name.
+//   * a thrown grenade's projectile is LINK_ENTITY_TO_CLASS(grenade, ...) with
+//     MAKE_STRING_CLASS("grenade", pev), so an HE kill can arrive as either
+//     "hegrenade" (the weapon was the inflictor) or "grenade" (the projectile
+//     was). Both are mapped.
+//
+// The sprites are GoldClient's own killfeed set (scripts/kf_tga2spr.py), whose
+// stems are the CS 1.6 weapon names. A name that is not in this table yields
+// sprite -1 and the row simply draws without a weapon icon (KF_BuildRow skips
+// it), so an unknown weapon degrades instead of breaking the layout.
 struct kf_weapon_map { const char *msg; const char *spr; };
 static const kf_weapon_map kf_weapons[] =
 {
 	{ "ak47", "ak47" }, { "aug", "aug" }, { "awp", "awp" },
 	{ "deagle", "deagle" }, { "elite", "elite" }, { "famas", "famas" },
-	{ "fiveseven", "fiveseven" }, { "g3sg1", "g3sg1" }, { "galil", "galilar" },
-	{ "galilar", "galilar" }, { "glock18", "glock" }, { "glock", "glock" },
+	{ "fiveseven", "fiveseven" }, { "g3sg1", "g3sg1" }, { "galil", "galil" },
+	{ "glock18", "glock18" },
 	{ "m249", "m249" }, { "m4a1", "m4a1" }, { "mac10", "mac10" },
-	{ "mp5navy", "mp5sd" }, { "mp5sd", "mp5sd" }, { "p90", "p90" },
-	{ "p228", "deagle" }, { "scout", "ssg08" }, { "ssg08", "ssg08" },
-	{ "sg550", "g3sg1" }, { "sg552", "sg556" }, { "sg556", "sg556" },
-	{ "tmp", "mac10" }, { "ump45", "ump45" }, { "usp", "usp_silencer" },
-	{ "usp_silencer", "usp_silencer" }, { "xm1014", "xm1014" },
-	{ "m3", "xm1014" }, { "hegrenade", "hegrenade" },
-	{ "flashbang", "flashbang" }, { "smokegrenade", "smokegrenade" },
-	{ "c4", "c4" }, { "knife", "knife" }, { "grenade", "hegrenade" },
+	{ "mp5navy", "mp5navy" }, { "p90", "p90" },
+	{ "p228", "p228" }, { "scout", "scout" },
+	{ "sg550", "sg550" }, { "sg552", "sg552" },
+	{ "tmp", "tmp" }, { "ump45", "ump45" }, { "usp", "usp" },
+	{ "xm1014", "xm1014" }, { "m3", "m3" },
+	// grenades: HE uses the grenade sprite, smoke kills get their own icon
+	{ "hegrenade", "grenade" }, { "grenade", "grenade" },
+	{ "flashbang", "flashbang" }, { "smokegrenade", "smoke_kill" },
+	// NOTE: weapontype.h also enumerates WEAPON_C4, but neither GoldClient's
+	// asset set nor ours ships a c4 killfeed icon, so a C4 kill deliberately has
+	// no weapon icon rather than a broken sprite handle.
+	{ "knife", "knife" },
+	// Suicide / environmental death. The engine sends "world" for a fall or a
+	// map hazard; the legacy path draws d_skull for it, so ours must too or the
+	// row degenerates to a bare victim name with no icon at all.
+	{ "world", "skull" }, { "worldspawn", "skull" },
+	// NOTE: weapon_c4 and weapon_shield exist as entities but do not appear
+	// here. C4 kills come from the explosion, whose inflictor is the "grenade"
+	// projectile, and the shield deals no damage. Neither GoldClient nor we ship
+	// a c4/shield killfeed icon, so mapping them would point at a missing
+	// sprite.
+	//
+	// NOTE: GoldClient's asset set also carries d_tripmine / d_sentrygun /
+	// d_tracktrain / d_infection / d_snowball / d_inferno icons. Those are
+	// Half-Life / mod entities that this game's ReGameDLL never links (checked
+	// the LINK_ENTITY_TO_CLASS list), so they are not mapped either.
+	//
+	// d_inferno IS what the reference's row 2 shows (silhouette match: MAE
+	// 0.185 vs 0.247 for the runner-up), so GoldClient does use it -- but it
+	// belongs to a mod that has a fire damage type, which this game does not.
 	{ NULL, NULL }
 };
 
@@ -76,14 +122,13 @@ struct DeathNoticeItem {
 	char szVictim[MAX_PLAYER_NAME_LENGTH*2];
 	char szAssister[MAX_PLAYER_NAME_LENGTH*2];
 	int iId;	// the index number of the associated sprite (legacy path)
+	bool bUsed;	// slot occupancy -- see the note in MsgFunc_DeathMsg
 	int iKfWeapon;  // index into m_kfWeapon[], or -1
 	bool bSuicide;
 	bool bTeamKill;
 	bool bNonPlayerKill;
 	bool bLocal;    // local player is killer or victim -> red border
-	bool bVictimIsLocalDeath; // local player is the victim -> dark red plate
 	float flDisplayTime;
-	float flSpawnTime;
 	float *KillerColor;
 	float *VictimColor;
 	float *AssisterColor;
@@ -91,7 +136,7 @@ struct DeathNoticeItem {
 	kf_row_mods mods;
 };
 
-#define MAX_DEATHNOTICES	5
+// MAX_DEATHNOTICES lives in hud.h (the class declares a per-row array).
 static int DEATHNOTICE_DISPLAY_TIME = 6;
 
 #define DEATHNOTICE_TOP		32
@@ -108,26 +153,58 @@ static bool     s_kfReady = false;
 cvar_t *cl_killsound;
 cvar_t *cl_killsound_path;
 
-// ---- killfeed visual metrics (fractions of plate height H) ----
-// measured against the real killfeed (see project notes). Plate height is
-// derived from the console font so the feed scales with hud_scale / DPI.
-#define KF_F_PADX      0.34f
-#define KF_F_GAP       0.26f
-#define KF_F_GAP_WING  0.05f
-#define KF_F_RADIUS    0.13f
-#define KF_F_BORDER    0.07f
-#define KF_F_WING_DY  -0.20f
-#define KF_F_PITCH     1.14f   // row-to-row spacing (plate + gap)
-#define KF_ENTER_MS    180.0f
-#define KF_EXIT_MS     220.0f
+// ---- killfeed console customisation ----------------------------------------
+// EVERY size cvar here is a MULTIPLIER on the one scale (see killfeed_layout.h),
+// never an absolute pixel count: an absolute pixel cvar would be a second base
+// and would break proportions on some device, which is the bug class this whole
+// file was restructured to prevent. Colours are "R G B" strings, 0-255.
+//
+// File scope, not members of CHud: only the helpers in this file read them.
+static cvar_t *cl_killfeed;             // 1 = GoldClient killfeed, 0 = classic
+static cvar_t *cl_killfeed_time;        // seconds a row stays before fading
+static cvar_t *cl_killfeed_scale;       // overall size multiplier
+static cvar_t *cl_killfeed_x;           // right-edge inset multiplier
+static cvar_t *cl_killfeed_y;           // top inset multiplier
+static cvar_t *cl_killfeed_rows;        // max rows drawn at once
+static cvar_t *cl_killfeed_plate;       // 0 = no backing plate
+static cvar_t *cl_killfeed_plate_color; // "R G B"
+static cvar_t *cl_killfeed_plate_alpha; // 0..255
+static cvar_t *cl_killfeed_corner;      // corner radius multiplier (0 = square)
+static cvar_t *cl_killfeed_outline;     // local border thickness multiplier
+static cvar_t *cl_killfeed_ct_color;    // "R G B"
+static cvar_t *cl_killfeed_t_color;     // "R G B"
+static cvar_t *cl_killfeed_icon_color;  // "R G B"
+static cvar_t *cl_killfeed_bold;        // 1 = faux-bold names
 
-// Killfeed-specific team name colours, MEASURED from the approved reference
-// (screenshot 1000312966.png glyph cores). The engine-wide g_ColorBlue/g_ColorRed
-// are shared with chat/statusbar/scoreboard, so we keep our own here to avoid
-// tinting the rest of the HUD. CT = steel blue, T = amber/gold.
-static vec3_t s_kfColorCT = { 129.0f/255.0f, 154.0f/255.0f, 202.0f/255.0f };
-static vec3_t s_kfColorT  = { 221.0f/255.0f, 195.0f/255.0f, 135.0f/255.0f };
-static vec3_t s_kfColorGrey = { 0.8f, 0.8f, 0.8f };
+// ---- killfeed geometry ------------------------------------------------------
+// The layout math lives in killfeed_layout.h (kf_scale / kf_row_height /
+// kf_row_alpha). The GEOMETRY constants there are measured from the reference
+// frame and cross-checked against GoldClient's client.dll; see
+// shared/bloom-client/GOLDCLIENT_KILLFEED.md.
+//
+// Model in one line: the TEXT cell and the icons come from ONE scale, and the
+// plate wraps the finished row (see killfeed_layout.h).
+//
+// KF_EXIT_MS is NOT measured. GoldClient has an hud_deathnotice_fade toggle
+// (0x101F9E58) but the disassembly notes do not record its duration, and a
+// still frame cannot show it. 220ms is a chosen value, short enough not to hold
+// an expired row visibly. Calling it reverse-engineered would be a lie.
+#define KF_EXIT_MS     220.0f  // fade-out duration on expiry (chosen, not measured)
+
+// Killfeed name colours: CT = steel blue, T = amber/gold. MEASURED from the
+// reference the user approved (screenshot 1000312966.png), glyph cores only, so
+// antialiasing toward the plate does not drag the value.
+// The engine-wide g_ColorBlue/g_ColorRed are shared with chat/statusbar/
+// scoreboard, so the killfeed keeps its own copies here and leaves the rest of
+// the HUD untinted.
+//
+// NOT const: KF_RowStyle() refreshes them from the colour cvars every frame.
+// Rows hold POINTERS to these (assigned when the message arrives), so refreshing
+// in place re-colours rows that are already on screen -- otherwise a colour
+// change would only affect kills that happen afterwards.
+static vec3_t s_kfColorCT   = { 129.0f/255.0f, 154.0f/255.0f, 202.0f/255.0f };
+static vec3_t s_kfColorT    = { 221.0f/255.0f, 195.0f/255.0f, 135.0f/255.0f };
+static vec3_t s_kfColorGrey = { 204.0f/255.0f, 204.0f/255.0f, 204.0f/255.0f };
 
 // Team colour for the killfeed only (mirrors GetClientColor's team mapping).
 static float *KF_TeamColor( int clientIndex )
@@ -142,8 +219,6 @@ static float *KF_TeamColor( int clientIndex )
 	}
 }
 
-static inline int kf_min( int a, int b ) { return a < b ? a : b; }
-static inline int kf_max( int a, int b ) { return a > b ? a : b; }
 
 int CHudDeathNotice :: Init( void )
 {
@@ -154,9 +229,25 @@ int CHudDeathNotice :: Init( void )
 	hud_deathnotice_time = CVAR_CREATE( "hud_deathnotice_time", "6", FCVAR_ARCHIVE );
 	cl_killsound = CVAR_CREATE( "cl_killsound", "0", FCVAR_ARCHIVE );
 	cl_killsound_path = CVAR_CREATE( "cl_killsound_path", "buttons/bell1.wav", FCVAR_ARCHIVE );
-	cl_killfeed = CVAR_CREATE( "cl_killfeed", "1", FCVAR_ARCHIVE );
-	cl_killfeed_time = CVAR_CREATE( "cl_killfeed_time", "6", FCVAR_ARCHIVE );
-	cl_killfeed_scale = CVAR_CREATE( "cl_killfeed_scale", "0.8", FCVAR_ARCHIVE );
+
+	// Killfeed. Defaults reproduce the measured GoldClient reference at 1080p.
+	// Sizes are MULTIPLIERS on the one scale, never absolute pixels -- that way
+	// a user tweak cannot re-introduce a second base and break the proportions.
+	cl_killfeed             = CVAR_CREATE( "cl_killfeed",             "1", FCVAR_ARCHIVE );
+	cl_killfeed_time        = CVAR_CREATE( "cl_killfeed_time",        "6", FCVAR_ARCHIVE );
+	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",       "1", FCVAR_ARCHIVE );
+	cl_killfeed_x           = CVAR_CREATE( "cl_killfeed_x",           "1", FCVAR_ARCHIVE );
+	cl_killfeed_y           = CVAR_CREATE( "cl_killfeed_y",           "1", FCVAR_ARCHIVE );
+	cl_killfeed_rows        = CVAR_CREATE( "cl_killfeed_rows",        "5", FCVAR_ARCHIVE );
+	cl_killfeed_plate       = CVAR_CREATE( "cl_killfeed_plate",       "1", FCVAR_ARCHIVE );
+	cl_killfeed_plate_color = CVAR_CREATE( "cl_killfeed_plate_color", "46 43 42", FCVAR_ARCHIVE );
+	cl_killfeed_plate_alpha = CVAR_CREATE( "cl_killfeed_plate_alpha", "136", FCVAR_ARCHIVE );
+	cl_killfeed_corner      = CVAR_CREATE( "cl_killfeed_corner",      "1", FCVAR_ARCHIVE );
+	cl_killfeed_outline     = CVAR_CREATE( "cl_killfeed_outline",     "1", FCVAR_ARCHIVE );
+	cl_killfeed_ct_color    = CVAR_CREATE( "cl_killfeed_ct_color",    "129 154 202", FCVAR_ARCHIVE );
+	cl_killfeed_t_color     = CVAR_CREATE( "cl_killfeed_t_color",     "221 195 135", FCVAR_ARCHIVE );
+	cl_killfeed_icon_color  = CVAR_CREATE( "cl_killfeed_icon_color",  "204 204 204", FCVAR_ARCHIVE );
+	cl_killfeed_bold        = CVAR_CREATE( "cl_killfeed_bold",        "1", FCVAR_ARCHIVE );
 	m_iFlags = 0;
 
 	return 1;
@@ -169,7 +260,6 @@ void CHudDeathNotice :: InitHUDData( void )
 	for( int i = 0; i < MAX_DEATHNOTICES + 1; i++ )
 		rgDeathNoticeList[i].iKfWeapon = -1;
 }
-
 void CHudDeathNotice :: KF_LoadIcons( void )
 {
 	char path[64];
@@ -180,7 +270,11 @@ void CHudDeathNotice :: KF_LoadIcons( void )
 
 	for( i = 0; kf_weapons[i].msg && s_kfWeaponCount < KF_MAX_WEAPONS; i++ )
 	{
-		// de-dup by sprite file: several msg names share one sprite
+		// Several msg names deliberately share one sprite file (hegrenade and
+		// grenade both use grenade.spr; world and worldspawn both use skull.spr).
+		// Each gets its own entry so the name lookup stays a flat scan; the
+		// engine's SPR_Load caches by filename, so the duplicate call does not
+		// load the file twice.
 		snprintf( path, sizeof(path), "sprites/kf/%s.spr", kf_weapons[i].spr );
 		HSPRITE h = SPR_Load( path );
 		strlcpy( s_kfWeaponName[s_kfWeaponCount], kf_weapons[i].msg,
@@ -240,229 +334,473 @@ static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
 	rc.bottom = SPR_Height( spr, 0 );
 
 	SPR_Set( spr, r, g, b );
-	// blendsrc GL_ONE(1), blenddst GL_ONE(1) -> additive, matches the white
-	// premultiplied-over-black sprites we bake (see png2spr32.py).
+	// blendsrc GL_ONE(1), blenddst GL_ONE(1) -> additive. The sprites are
+	// GoldClient's own killfeed art converted by scripts/kf_tga2spr.py, which
+	// bakes the TGA's alpha shape into white-on-black SPR32 texels, so additive
+	// blending reproduces them exactly.
 	gEngfuncs.pfnSPR_DrawGeneric( 0, x, y, &rc, 1, 1, w, h );
 }
 
-static inline int KF_IconW( HSPRITE spr, int h )
+// On-screen size of one kf sprite. ONE scale applies to every icon in the feed
+// (see killfeed_layout.h): the texture is drawn at its own size times the shared
+// row scale, so the relative sizes the artist drew survive. MEASURED: the '+'
+// glue (12x12 texture) stays small next to combat icons (32x32), which rules out
+// per-sprite normalisation to the font height.
+static void KF_IconWH( HSPRITE spr, const kf_metrics *m, int raised,
+					   int *w, int *h )
 {
-	int sw, sh;
-	if( !spr ) return 0;
-	sw = SPR_Width( spr, 0 );
-	sh = SPR_Height( spr, 0 );
-	if( sh <= 0 ) return h;
-	return ( sw * h ) / sh; // preserve aspect, never stretch
+	int nw, nh;
+	*w = 0; *h = 0;
+	if( !spr )
+		return;
+	nw = SPR_Width( spr, 0 );
+	nh = SPR_Height( spr, 0 );
+	// The airborne wing has its own measured ratio and is not clamped to the
+	// text cell -- it overhangs the plate on purpose. See killfeed_layout.h.
+	*h = raised ? kf_wing_height( nh, m->scale )
+				: kf_icon_height( nh, m->scale, m->textH );
+	*w = kf_icon_width( nw, nh, *h );
 }
 
-// Draw a killfeed name. The engine console font is a fixed-size bitmap that we
-// cannot make bold via a style flag, so we FAUX-BOLD it: draw the string twice
-// with a 1px horizontal offset, which thickens every stroke and reproduces the
-// heavy look of the reference without shipping a new font asset. Returns the
-// end x of a single (un-offset) pass so callers advance by the true text width.
-static int KF_DrawName( int x, int y, const char *name, float *rgb, float alpha )
+// ---- text: the killfeed must be able to SIZE its text, not just place it ----
+//
+// The engine HUD font is a fixed raster (engine/client/cl_scrn.c: charHeight is
+// the raster height times hud_fontscale, FCVAR_LATCH, default 1.0). It does NOT
+// change with resolution. Drawing killfeed text through the plain console path
+// therefore pins text to one size while icons scale -- the two bases drift and
+// the plate, sized by max(text, icons), changes shape on every device. That was
+// the root defect.
+//
+// A scaled path DOES exist: DrawUtils::DrawHudString(..., scale) ->
+// TextMessageDrawChar -> gMobileAPI.pfnDrawScaledCharacter. It requires
+// hud_textmode != 0 (else DrawConsoleString bypasses it) AND a mobile API
+// (g_iMobileAPIVersion != 0, set in cdll_int.cpp HUD_MobilityInterface).
+//
+// KF_TextScalable() reports whether that path is usable RIGHT NOW. When it is
+// not, the feed does not fake it: kf_row_metrics() keys the whole row to the
+// font's own height instead, so everything still comes from one base.
+static bool KF_TextScalable( void )
 {
-	int endx;
-	if( rgb )
-		DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
-	endx = DrawUtils::DrawConsoleString( x, y, name );   // main pass, defines width
-	if( rgb )
-		DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
-	DrawUtils::DrawConsoleString( x + 1, y, name );       // +1px pass -> bold weight
-	return endx;
+	return gHUD.hud_textmode->value != 0.0f && g_iMobileAPIVersion != 0;
 }
 
-// Measure the pixel width of one row at plate height H.
-static int KF_RowWidth( const DeathNoticeItem *item, int H, int iconH, int modH,
-						int gap, int gapWing, int padx )
+// Width of a killfeed string at the row's text scale.
+static int KF_TextWidth( const char *str, float textScale )
 {
-	int w = padx;
-	int j;
-	bool first = true;
+	if( !str || !str[0] )
+		return 0;
+	if( KF_TextScalable() )
+		return DrawUtils::HudStringLen( str, textScale );
+	return DrawUtils::ConsoleStringLen( str );
+}
 
-	#define KF_ADV(px) do { if(!first) w += gap; w += (px); first = false; } while(0)
-
-	for( j = 0; j < item->mods.nPre; j++ )
-		KF_ADV( KF_IconW( s_kfModSpr[item->mods.pre[j]], modH ) );
-
-	if( !item->bSuicide && item->szKiller[0] )
-		KF_ADV( DrawUtils::ConsoleStringLen( item->szKiller ) + 1 ); // +1 faux-bold
-
-	if( item->mods.flashAssist && item->szAssister[0] )
+// Draw a killfeed name at the row's text scale. The engine console font cannot
+// be made bold via a style flag, so we FAUX-BOLD it: draw twice with a 1px
+// horizontal offset, which thickens every stroke and reproduces the heavy look
+// of the reference without shipping a new font asset.
+static void KF_DrawName( int x, int y, const char *name, float *rgb,
+						 float alpha, float textScale, int bold )
+{
+	int r = 255, g = 255, b = 255;
+	if( rgb )
 	{
-		KF_ADV( KF_IconW( s_kfModSpr[KFI_FLASHASSIST], modH ) );
-		KF_ADV( DrawUtils::ConsoleStringLen( item->szAssister ) + 1 );
+		r = (int)( rgb[0] * alpha * 255.0f );
+		g = (int)( rgb[1] * alpha * 255.0f );
+		b = (int)( rgb[2] * alpha * 255.0f );
 	}
-
-	if( item->mods.wing >= 0 )
+	if( KF_TextScalable() )
 	{
-		// wing sits just left of the weapon with a tiny gap
-		if(!first) w += gap;
-		w += KF_IconW( s_kfModSpr[item->mods.wing], modH );
-		first = false;
-		w += gapWing; // replaces the normal gap before the weapon
-		w += ( item->iKfWeapon >= 0 ) ? KF_IconW( s_kfWeaponSpr[item->iKfWeapon], iconH ) : 0;
+		// iMaxX 0 = no clipping; the row was measured with the same scale.
+		DrawUtils::DrawHudString( x, y, 0, name, r, g, b, textScale );
+		if( bold )
+			DrawUtils::DrawHudString( x + 1, y, 0, name, r, g, b, textScale );
+		return;
+	}
+	if( rgb )
+		DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
+	DrawUtils::DrawConsoleString( x, y, name );
+	if( bold )
+	{
+		if( rgb )
+			DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
+		DrawUtils::DrawConsoleString( x + 1, y, name );
+	}
+}
+
+// Parse an "R G B" cvar string into clamped channels. A malformed or empty
+// string leaves the fallback untouched, so a typo in config.cfg cannot make the
+// feed invisible.
+//
+// Mirrored by tests/test_killfeed_cvars.c (death.cpp cannot be compiled on the
+// host -- it needs the engine). Change this and change that.
+static void KF_ParseColor( const char *s, int *r, int *g, int *b )
+{
+	int v[3];
+	if( !s || !s[0] )
+		return;
+	if( sscanf( s, "%d %d %d", &v[0], &v[1], &v[2] ) != 3 )
+		return;
+	*r = kf_clamp_i( v[0], 0, 255 );
+	*g = kf_clamp_i( v[1], 0, 255 );
+	*b = kf_clamp_i( v[2], 0, 255 );
+}
+
+// Height of the text CELL the killfeed must reserve, in the font that will
+// actually draw the glyphs. Getting this from the wrong font is not cosmetic:
+// the plate is sized from it, so the names would either overflow the plate or
+// float inside it.
+//
+// The engine has TWO independent HUD fonts, and which one draws depends on
+// hud_textmode:
+//   hud_textmode 0 (DEFAULT) -> DrawConsoleString -> pfnDrawConsoleString ->
+//       Con_GetFont(con_fontsize) = con.chars[N]. THREE different fonts, picked
+//       by resolution (engine/client/console.c Con_LoadConchars: <=640 -> font0,
+//       >=1280 -> font2, else font1).
+//   hud_textmode != 0        -> DrawHudString -> pfnDrawCharacter ->
+//       cls.creditsFont, which is what gHUD.GetCharHeight() reports.
+//
+// So GetCharHeight() is the RIGHT answer only when the scalable path is actually
+// taken. The condition MUST be the same one KF_TextScalable() uses -- checking
+// only hud_textmode would report the creditsFont's height on a non-mobile build,
+// where the draw call still goes to DrawConsoleString. That is exactly the
+// "measure one font, draw another" bug this function exists to prevent.
+static int KF_TextCellHeight( void )
+{
+	int h;
+	if( KF_TextScalable() )
+	{
+		h = gHUD.GetCharHeight();
 	}
 	else
 	{
-		KF_ADV( ( item->iKfWeapon >= 0 ) ? KF_IconW( s_kfWeaponSpr[item->iKfWeapon], iconH ) : 0 );
+		int w = 0;
+		h = 0;
+		// "M" is only a probe; the height does not depend on the string.
+		DrawUtils::ConsoleStringSize( "M", &w, &h );
 	}
-
-	for( j = 0; j < item->mods.nMid; j++ )
-		KF_ADV( KF_IconW( s_kfModSpr[item->mods.mid[j]], modH ) );
-
-	if( !item->bNonPlayerKill && item->szVictim[0] )
-		KF_ADV( DrawUtils::ConsoleStringLen( item->szVictim ) + 1 ); // +1 faux-bold
-
-	#undef KF_ADV
-	w += padx;
-	return w;
+	// The engine returns 0 before the fonts are loaded (first VidInit) and could
+	// in principle fail to load a font at all. A zero cell would collapse every
+	// row, so fall back to the reference cell instead of drawing garbage.
+	if( h < 1 )
+		h = (int)KF_REF_TEXT_H;
+	return h;
 }
 
-// Draw a rounded rectangle by filling an inner rect and clipping the corners
-// with small notches (engine has no native rounded fill from the client).
-static void KF_RoundedPlate( int x, int y, int w, int h, int radius,
-							 int r, int g, int b, int a )
+
+// Build the per-frame metric bundle: ONE scale for the whole feed.
+//
+// When the font cannot be scaled (see KF_TextScalable) we do not let icons run
+// away from the text: the scale is re-derived so the text cell equals the font's
+// natural height. The feed then tracks the font instead of the resolution, but
+// it stays internally proportional -- which is the property that was broken.
+static void KF_RowMetrics( float userScale, kf_metrics *m )
 {
-	if( radius * 2 > h ) radius = h / 2;
-	if( radius * 2 > w ) radius = w / 2;
-	// center band (full height)
-	FillRGBABlend( x + radius, y, w - radius * 2, h, r, g, b, a );
-	// left/right bands (reduced height for the rounded ends)
-	FillRGBABlend( x, y + radius, radius, h - radius * 2, r, g, b, a );
-	FillRGBABlend( x + w - radius, y + radius, radius, h - radius * 2, r, g, b, a );
-	// diagonal step-fill of the four corners (cheap anti-alias-ish)
-	for( int i = 0; i < radius; i++ )
-	{
-		int inset = radius - (int)( sqrtf( (float)(radius*radius - (radius-i)*(radius-i)) ) );
-		FillRGBABlend( x + inset,             y + i,             radius - inset, 1, r, g, b, a );
-		FillRGBABlend( x + w - radius,        y + i,             radius - inset, 1, r, g, b, a );
-		FillRGBABlend( x + inset,             y + h - 1 - i,     radius - inset, 1, r, g, b, a );
-		FillRGBABlend( x + w - radius,        y + h - 1 - i,     radius - inset, 1, r, g, b, a );
-	}
+	int fontRasterH = KF_TextCellHeight();
+
+	userScale = kf_clamp_f( userScale, 0.25f, 4.0f );
+
+	if( KF_TextScalable() )
+		kf_compute_metrics( ScreenHeight, userScale, fontRasterH, m );
+	else
+		kf_compute_metrics_for_font( fontRasterH, userScale, m );
+
+	// User offsets for the feed position. Multipliers, so the inset keeps its
+	// proportion to everything else instead of becoming a fixed pixel margin.
+	m->marginX = kf_px( (float)m->marginX,
+						kf_clamp_f( cl_killfeed_x->value, 0.0f, 20.0f ) );
+	m->marginY = kf_px( (float)m->marginY,
+						kf_clamp_f( cl_killfeed_y->value, 0.0f, 20.0f ) );
+	if( m->marginX < 0 ) m->marginX = 0;
+	if( m->marginY < 0 ) m->marginY = 0;
+	// A cranked multiplier must not push the feed off-screen: at x 20 the inset
+	// would be ~400px, which is most of a narrow viewport. Cap each inset at a
+	// quarter of the screen so the feed stays visible whatever the user types.
+	// (KF_DrawRow separately clamps a row that measures wider than the screen.)
+	if( m->marginX > ScreenWidth / 4 )  m->marginX = ScreenWidth / 4;
+	if( m->marginY > ScreenHeight / 4 ) m->marginY = ScreenHeight / 4;
 }
 
-static void KF_Border( int x, int y, int w, int h, int t, int r, int g, int b )
+// Read the console-tunable appearance once per frame.
+static void KF_RowStyle( kf_style *st )
 {
-	FillRGBA( x, y, w, t, r, g, b, 255 );
-	FillRGBA( x, y + h - t, w, t, r, g, b, 255 );
-	FillRGBA( x, y, t, h, r, g, b, 255 );
-	FillRGBA( x + w - t, y, t, h, r, g, b, 255 );
+	st->plate      = cl_killfeed_plate->value != 0.0f;
+	st->plateR = 46; st->plateG = 43; st->plateB = 42;
+	KF_ParseColor( cl_killfeed_plate_color->string,
+				   &st->plateR, &st->plateG, &st->plateB );
+	st->plateAlpha = kf_clamp_i( (int)cl_killfeed_plate_alpha->value, 0, 255 );
+
+	st->cornerScale100  = kf_clamp_i( (int)( cl_killfeed_corner->value * 100.0f ), 0, 400 );
+	st->outlineScale100 = kf_clamp_i( (int)( cl_killfeed_outline->value * 100.0f ), 0, 400 );
+	st->bold = cl_killfeed_bold->value != 0.0f;
+
+	st->ctR = 129; st->ctG = 154; st->ctB = 202;
+	KF_ParseColor( cl_killfeed_ct_color->string, &st->ctR, &st->ctG, &st->ctB );
+	st->tR = 221; st->tG = 195; st->tB = 135;
+	KF_ParseColor( cl_killfeed_t_color->string, &st->tR, &st->tG, &st->tB );
+	st->iconR = 204; st->iconG = 204; st->iconB = 204;
+	KF_ParseColor( cl_killfeed_icon_color->string,
+				   &st->iconR, &st->iconG, &st->iconB );
+
+	// Push the name colours into the shared vec3_t's the rows point at, so a
+	// colour change takes effect on rows ALREADY on screen, not just future ones.
+	s_kfColorCT[0] = st->ctR / 255.0f;
+	s_kfColorCT[1] = st->ctG / 255.0f;
+	s_kfColorCT[2] = st->ctB / 255.0f;
+	s_kfColorT[0]  = st->tR / 255.0f;
+	s_kfColorT[1]  = st->tG / 255.0f;
+	s_kfColorT[2]  = st->tB / 255.0f;
+	s_kfColorGrey[0] = st->iconR / 255.0f;
+	s_kfColorGrey[1] = st->iconG / 255.0f;
+	s_kfColorGrey[2] = st->iconB / 255.0f;
+
+	st->maxRows = kf_clamp_i( (int)cl_killfeed_rows->value, 1, MAX_DEATHNOTICES );
 }
 
-static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY, int H,
-					   float alpha, int slideDx )
+// Engine-side draw payload, parallel to the kf_elem array: what to actually
+// blit for each measured element.
+typedef struct
 {
-	// PROPORTIONS MEASURED IN PIXELS FROM THE APPROVED v5 REFERENCE.
-	// Reference: plate 56px, bold name cap 22px, weapon icon 34px, modifier
-	// (crossed-eye/event) 27px, pitch ~58px (~4px gap). Everything is keyed to
-	// the engine console line height (TL) -- the ONE font we have and cannot
-	// resize -- so the whole feed scales with the player-name size.
-	// Ordering that matters: weapon(0.61*H) > modifier(0.50*H) > name-cap
-	// (~0.39*H). Icons are a bit taller than the text but never huge.
-	int TL    = gHUD.GetCharHeight();
-	int iconH = kf_max( 8, (int)( H * 0.61f ) );   // weapon silhouette (largest)
-	int modH  = kf_max( 8, (int)( H * 0.50f ) );   // modifier / event icon
-	int gap   = kf_max( 2, (int)( TL * 0.34f ) );  // small tidy element gap
-	int gapW  = kf_max( 1, (int)( TL * 0.06f ) );  // wing -> weapon
-	int padx  = kf_max( 3, (int)( TL * 0.50f ) );  // inner L/R padding
-	int radius = kf_max( 2, (int)( H * 0.16f ) );  // ~9px @ ref
-	int border = kf_max( 2, (int)( H * 0.05f ) );  // 2-3px @ ref
+	HSPRITE     spr;    // sprite handle, 0 for a text element
+	const char *text;   // string, NULL for an icon element
+	float      *color;  // text colour (NULL for icons)
+} kf_draw;
+
+// Measure one row into the shared element list, in draw order. This is the ONE
+// place the element sequence is written down -- kf_layout_row() then assigns x
+// for both measuring and drawing, so the two can no longer drift apart.
+// Returns the element count.
+static int KF_BuildRow( const DeathNoticeItem *item, const kf_metrics *m,
+						const kf_style *st, kf_elem *el, kf_draw *dr )
+{
+	int n = 0;
 	int j;
 
-	int w = KF_RowWidth( item, H, iconH, modH, gap, gapW, padx );
-	int x = rightX - w + slideDx;
-	int y = topY;
-	int cy = y + H / 2;
-	int ty = cy - TL / 2;  // text baseline row (console string draws from top)
+	// append an icon element
+	#define KF_PUSH_ICON( sprite, tight, lift ) do { \
+		if( n < KF_MAX_ELEMS ) { \
+			HSPRITE _s = (sprite); \
+			KF_IconWH( _s, m, (lift), &el[n].w, &el[n].h ); \
+			el[n].tightGap = (tight); el[n].raised = (lift); \
+			dr[n].spr = _s; dr[n].text = NULL; dr[n].color = NULL; \
+			n++; \
+		} \
+	} while(0)
 
-	// Translucent plate. MEASURED from the approved reference: the plate interior
-	// reads ~(49,47,44) over a ~(28,24,20) backdrop, i.e. it is LIGHTER than the
-	// scene behind it, not near-black. A dark plate (the previous 18,18,18 @ 0.63)
-	// made rows sink into the background instead of reading as separate tiles.
-	// A light grey at low alpha lifts the row over any backdrop while staying
-	// see-through, which is what the reference does.
-	int baseA = (int)( ( item->bLocal ? 120 : 105 ) * alpha );
-	if( baseA < 4 ) return w;
+	// append a text element (+1px only when faux-bold widens the string)
+	#define KF_PUSH_TEXT( str, rgb ) do { \
+		if( n < KF_MAX_ELEMS ) { \
+			el[n].w = KF_TextWidth( str, m->textScale ) + ( st->bold ? 1 : 0 ); \
+			el[n].h = m->textH; \
+			el[n].tightGap = 0; \
+			el[n].raised = 0; \
+			dr[n].spr = 0; dr[n].text = (str); dr[n].color = (rgb); \
+			n++; \
+		} \
+	} while(0)
 
-	// plate: light grey for normal, red tint when the local player died
-	int pr = 70, pg = 68, pb = 64;
-	if( item->bLocal && item->bVictimIsLocalDeath )
-		{ pr = 150; pg = 40; pb = 40; baseA = kf_min( 190, baseA + 45 ); }
+	for( j = 0; j < item->mods.nPre; j++ )
+		KF_PUSH_ICON( s_kfModSpr[item->mods.pre[j]], 0, 0 );
 
-	KF_RoundedPlate( x, y, w, H, radius, pr, pg, pb, baseA );
-	if( item->bLocal )
-		KF_Border( x, y, w, H, border, 255, 36, 36 );  // bright red outline
+	if( !item->bSuicide && item->szKiller[0] )
+		KF_PUSH_TEXT( item->szKiller, item->KillerColor );
+
+	// Assist. VERIFIED against ReGameDLL: the server sends the assister index
+	// (PLAYERDEATH_ASSISTANT) INDEPENDENTLY of whether the help was a flash
+	// (KILLRARITY_ASSISTEDFLASH). So the row must show an assist whenever there
+	// is an assister; the flash icon is an EXTRA that only appears for a flash
+	// assist. Gating the whole block on flashAssist hid every ordinary assist.
+	//
+	// MEASURED on the native reference (row 6): a '+' glyph sits between the
+	// killer name and the assister, and for a flash assist the flash icon sits
+	// between the '+' and the name -- "killer + [flash] assister". Silhouette
+	// match by alpha channel: assist_flash 0.159 at x1659 (20x15). The '+' is
+	// its own 12x12 sprite, drawn at the shared icon scale, so it stays visibly
+	// smaller than combat icons.
+	if( item->szAssister[0] )
+	{
+		KF_PUSH_ICON( s_kfModSpr[KFI_PLUS], 0, 0 );
+		if( item->mods.flashAssist )
+			KF_PUSH_ICON( s_kfModSpr[KFI_FLASHASSIST], 0, 0 );
+		KF_PUSH_TEXT( item->szAssister, item->AssisterColor );
+	}
+
+	// the wing (airborne kill) is raised and hugs the weapon with a tight gap
+	if( item->mods.wing >= 0 )
+		KF_PUSH_ICON( s_kfModSpr[item->mods.wing], 0, 1 );
+
+	if( item->iKfWeapon >= 0 )
+		KF_PUSH_ICON( s_kfWeaponSpr[item->iKfWeapon], item->mods.wing >= 0, 0 );
+
+	for( j = 0; j < item->mods.nMid; j++ )
+		KF_PUSH_ICON( s_kfModSpr[item->mods.mid[j]], 0, 0 );
+
+	if( !item->bNonPlayerKill && item->szVictim[0] )
+		KF_PUSH_TEXT( item->szVictim, item->VictimColor );
+
+	#undef KF_PUSH_ICON
+	#undef KF_PUSH_TEXT
+	return n;
+}
+
+// Filled plate with rounded corners. GoldClient's style 3 draws the plate with
+// d_panel_corner sprites; the reference shows a ~5px quarter-round at each
+// corner (MEASURED: the right edge ramps 643->648 over 4 rows at the top). We
+// approximate the same curve by insetting the first `radius` scanlines top and
+// bottom, which reproduces the measured ramp without shipping the corner sprite.
+static void KF_FilledPlate( int x, int y, int w, int h,
+							int r, int g, int b, int a, int radius )
+{
+	int i;
+	if( radius < 1 || radius * 2 >= h || radius * 2 >= w )
+	{
+		FillRGBABlend( x, y, w, h, r, g, b, a );
+		return;
+	}
+	// middle block (full width) between the rounded caps
+	FillRGBABlend( x, y + radius, w, h - radius * 2, r, g, b, a );
+	// top and bottom caps: each scanline inset by a quarter-circle amount
+	for( i = 0; i < radius; i++ )
+	{
+		// horizontal inset for this scanline of the corner arc
+		int dx = radius - (int)( sqrtf( (float)( radius * radius
+					- ( radius - 1 - i ) * ( radius - 1 - i ) ) ) + 0.5f );
+		int rowW = w - dx * 2;
+		if( rowW <= 0 )
+			continue;
+		FillRGBABlend( x + dx, y + i,             rowW, 1, r, g, b, a ); // top
+		FillRGBABlend( x + dx, y + h - 1 - i,     rowW, 1, r, g, b, a ); // bottom
+	}
+}
+
+// Outline for the local player's row. Thickness t, colour rgba.
+//
+// The border STRADDLES the plate edge -- it is not inside it, nor outside it.
+// See kf_border_overhang() in killfeed_layout.h for the measurement that settles
+// this (centroids of the two red bands are 32.98px apart, and a plain plate is
+// exactly 33px).
+//
+// The caller is responsible for reserving the overhang vertically (KF_DrawRow
+// insets the plate by it), so this function only draws.
+static void KF_Border( int x, int y, int w, int h, int t,
+					   int r, int g, int b, int a )
+{
+	int out = kf_border_overhang( t );
+	int ox = x - out, oy = y - out;
+	int ow = w + out * 2, oh = h + out * 2;
+
+	FillRGBABlend( ox, oy, ow, t, r, g, b, a );              // top
+	FillRGBABlend( ox, oy + oh - t, ow, t, r, g, b, a );     // bottom
+	FillRGBABlend( ox, oy, t, oh, r, g, b, a );              // left
+	FillRGBABlend( ox + ow - t, oy, t, oh, r, g, b, a );     // right
+}
+
+// Draw one row, right-aligned at rightX with its top at topY.
+// Returns the VERTICAL SPACE the row occupied so the caller can advance to the
+// next one -- which is NOT always the plate height: an outlined row reserves
+// rowH + 2*overhang because its border straddles the plate edge (see
+// kf_border_overhang in killfeed_layout.h). The row width is reported through
+// *outW for callers that need it.
+//
+// GEOMETRY: text drives everything (see killfeed_layout.h). The row is as tall
+// as the taller of the font and the biggest icon, and the plate wraps that.
+//
+// ONE SCALE. Every length in a row comes from kf_metrics, which is derived from
+// kf_scale(ScreenHeight, cl_killfeed_scale) -- see killfeed_layout.h for why the
+// console font height is NOT the base (it does not change with resolution, so
+// text and icons used to drift apart and the plate changed shape per device).
+//
+// The MODEL is GoldClient's: text drives the row, the plate wraps the finished
+// row, row height = max(text cell, tallest icon), one shared icon scale.
+static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY,
+					   const kf_metrics *m, const kf_style *st,
+					   float alpha, int *outW )
+{
+	kf_elem el[KF_MAX_ELEMS];
+	kf_draw dr[KF_MAX_ELEMS];
+	int n, i, w, x, rowH, contentH, border = 0, overhang = 0, plateY, advance;
+
+	n = KF_BuildRow( item, m, st, el, dr );
+	w = kf_layout_row( el, n, m->gap, m->gapTight, m->padx );
+
+	// Row height: the taller of the text cell and the biggest icon, plus padding.
+	contentH = kf_row_height( m->textH, kf_tallest( el, n ) );
+	rowH = contentH + m->pady * 2;
+	if( outW ) *outW = w;
+
+	// An outlined row's border overhangs the plate, so the PLATE is inset by the
+	// overhang and the row reserves that space on both sides. Without this the
+	// gap above an outlined row shrank to vgap - overhang (1px instead of 3px at
+	// the reference) while every other gap stayed vgap -- the outlined row looked
+	// glued to the row above it.
+	if( item->bLocal && st->outlineScale100 > 0 && st->plate )
+	{
+		border = kf_border_thickness( ( m->outline * st->outlineScale100 ) / 100,
+									  m->vgap );
+		overhang = kf_border_overhang( border );
+	}
+	plateY = topY + overhang;
+	advance = rowH + overhang * 2;
+
+	int cy = plateY + rowH / 2;
+	int ty = cy - m->textH / 2;   // console strings draw from the top
+	// Right-aligned, but never past the left screen edge. A long name pair on a
+	// narrow viewport can measure wider than the screen; without this the plate
+	// would start at a negative x and the killer's name would be cut off outside
+	// the window instead of the row simply touching the left edge.
+	x = rightX - w;
+	if( x < 0 )
+		x = 0;
+
+	// Backing plate. GoldClient's BgColor is (46,43,42) at alpha 136 -- a faint
+	// lift over the scene (measured +6..+9 luminance), NOT a heavy grey tile.
+	//
+	// The early-out is on the ROW's fade, not on the plate's opacity: keying it
+	// to the plate meant `cl_killfeed_plate_alpha 0` (or plate 0) hid the names
+	// and icons too, since the function returned before drawing them.
+	int baseA = (int)( st->plateAlpha * alpha );
+	if( alpha <= 0.0f )
+		return advance;
+
+	if( st->plate && baseA >= 4 )
+	{
+		int corner = ( m->corner * st->cornerScale100 ) / 100;
+		KF_FilledPlate( x, plateY, w, rowH,
+						st->plateR, st->plateG, st->plateB, baseA, corner );
+
+		// Local player's row gets the outline. MEASURED colour OutlineFgColor
+		// (238,23,23) and thickness 3 at the reference.
+		if( border > 0 )
+		{
+			int oa = (int)( 255 * alpha );
+			KF_Border( x, plateY, w, rowH, border, 238, 23, 23, oa );
+		}
+	}
 
 	int tint = (int)( 255 * alpha );
-	int cx = x + padx;
-	bool first = true;
-
-	// pre-killer modifiers
-	for( j = 0; j < item->mods.nPre; j++ )
+	for( i = 0; i < n; i++ )
 	{
-		HSPRITE s = s_kfModSpr[item->mods.pre[j]];
-		int iw = KF_IconW( s, modH );
-		if(!first) cx += gap; first = false;
-		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
-		cx += iw;
+		if( el[i].w <= 0 )
+			continue;
+		if( dr[i].text )
+		{
+			KF_DrawName( x + el[i].x, ty, dr[i].text, dr[i].color, alpha,
+						 m->textScale, st->bold );
+		}
+		else
+		{
+			// The airborne "wing" icon is lifted above the row centre and
+			// overhangs the plate; everything else is centred. kf_elem_y()
+			// owns that rule. It measures from the PLATE top, not the row slot:
+			// on an outlined row those differ by the border overhang.
+			int iy = kf_elem_y( &el[i], plateY, cy, m->raise );
+			KF_DrawIcon( dr[i].spr, x + el[i].x, iy, el[i].w, el[i].h,
+						 ( st->iconR * tint ) / 255,
+						 ( st->iconG * tint ) / 255,
+						 ( st->iconB * tint ) / 255 );
+		}
 	}
 
-	// killer name
-	if( !item->bSuicide && item->szKiller[0] )
-	{
-		if(!first) cx += gap; first = false;
-		cx = KF_DrawName( cx, ty, item->szKiller, item->KillerColor, alpha );
-	}
-
-	// flash-assist icon + assister name
-	if( item->mods.flashAssist && item->szAssister[0] )
-	{
-		HSPRITE s = s_kfModSpr[KFI_FLASHASSIST];
-		int iw = KF_IconW( s, modH );
-		if(!first) cx += gap; first = false;
-		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
-		cx += iw + gap;
-		cx = KF_DrawName( cx, ty, item->szAssister, item->AssisterColor, alpha );
-	}
-
-	// wing (raised) then weapon, or just weapon
-	if( item->mods.wing >= 0 )
-	{
-		HSPRITE s = s_kfModSpr[item->mods.wing];
-		int iw = KF_IconW( s, modH );
-		if(!first) cx += gap; first = false;
-		KF_DrawIcon( s, cx, cy - modH/2 + (int)( H * KF_F_WING_DY ), iw, modH, tint, tint, tint );
-		cx += iw + gapW;
-	}
-	if( item->iKfWeapon >= 0 )
-	{
-		HSPRITE s = s_kfWeaponSpr[item->iKfWeapon];
-		int iw = KF_IconW( s, iconH );
-		if( !first && item->mods.wing < 0 ) cx += gap;
-		first = false;
-		KF_DrawIcon( s, cx, cy - iconH/2, iw, iconH, tint, tint, tint );
-		cx += iw;
-	}
-
-	// mid modifiers
-	for( j = 0; j < item->mods.nMid; j++ )
-	{
-		HSPRITE s = s_kfModSpr[item->mods.mid[j]];
-		int iw = KF_IconW( s, modH );
-		cx += gap;
-		KF_DrawIcon( s, cx, cy - modH/2, iw, modH, tint, tint, tint );
-		cx += iw;
-	}
-
-	// victim name
-	if( !item->bNonPlayerKill && item->szVictim[0] )
-	{
-		cx += gap;
-		KF_DrawName( cx, ty, item->szVictim, item->VictimColor, alpha );
-	}
-
-	return w;
+	return advance;
 }
 
 int CHudDeathNotice :: Draw( float flTime )
@@ -471,9 +809,35 @@ int CHudDeathNotice :: Draw( float flTime )
 
 	bool useKf = ( cl_killfeed->value != 0.0f ) && s_kfReady;
 
+	// ONE SCALE, computed once per frame. Every length in every row comes from
+	// this bundle; nothing downstream may invent its own base.
+	kf_metrics kfM;
+	kf_style   kfS;
+	int kfY = 0;      // running top edge for the accumulating kf stack
+	int kfDrawn = 0;  // rows drawn so far, against cl_killfeed_rows
+	if( useKf )
+	{
+		KF_RowMetrics( cl_killfeed_scale->value, &kfM );
+		KF_RowStyle( &kfS );
+		kfY = kfM.marginY;
+
+		// Spectator mode paints an opaque black bar across the whole top of the
+		// screen, INT_YPOS(2) = 20% of ScreenHeight tall (hud/spectator_gui.cpp
+		// "silly black bars"). At the normal top margin the feed would be drawn
+		// underneath it and be invisible. The legacy notice path already dodged
+		// this with ScreenHeight/5; do the same here instead of re-discovering
+		// the bug in-game.
+		if( g_iUser1 )
+		{
+			int specTop = ScreenHeight / 5 + kfM.marginY;
+			if( kfY < specTop )
+				kfY = specTop;
+		}
+	}
+
 	for( i = 0; i < MAX_DEATHNOTICES; i++ )
 	{
-		if ( rgDeathNoticeList[i].iId == 0 )
+		if ( !rgDeathNoticeList[i].bUsed )
 			break;  // we've gone through them all
 
 		if ( rgDeathNoticeList[i].flDisplayTime < flTime )
@@ -484,6 +848,10 @@ int CHudDeathNotice :: Draw( float flTime )
 			}
 			else
 			{
+				// Shift the rest down. The array has MAX_DEATHNOTICES + 1 slots
+				// and the extra tail slot is zeroed in InitHUDData and never
+				// filled, so it acts as a permanent "not used" terminator that
+				// gets shifted in here.
 				memmove( &rgDeathNoticeList[i], &rgDeathNoticeList[i+1], sizeof(DeathNoticeItem) * (MAX_DEATHNOTICES - i) );
 				i--;
 				continue;
@@ -496,32 +864,30 @@ int CHudDeathNotice :: Draw( float flTime )
 
 		if( useKf )
 		{
-			// Plate height keyed to the console font line height so text fits
-			// snugly; user scale lets phones bump it up/down. On a phone the
-			// feed sits in the top-right corner and never spans the screen.
-			float sc = cl_killfeed_scale->value;
-			if( sc < 0.5f ) sc = 0.5f;
-			if( sc > 3.0f ) sc = 3.0f;
-			int TL = gHUD.GetCharHeight();
-			// Plate height keyed to the ACTUAL console font (which sets the
-			// name text size we cannot enlarge past native). Ref ratio H~1.4*TL
-			// keeps names and icons at comparable visual weight (icon ~1.8x cap
-			// height, exactly like screenshots #1/#4). Enlarge the whole block
-			// with cl_killfeed_scale, never by shrinking the text.
-			int H = (int)( TL * 1.80f * sc );
-			if( H < 18 ) H = 18;
-			int pitch = (int)( H * 1.07f );  // ref vertical rhythm (~4px gap)
-			// top margin: a little down from the very top, right-aligned
-			int marginTop = YRES( 8 );
-			int marginRight = XRES( 6 );
-			int topY = marginTop + i * pitch;
-
-			float ageMs = ( flTime - rgDeathNoticeList[i].flSpawnTime ) * 1000.0f;
+			// ONE SCALE for the whole feed, computed once per frame (see
+			// KF_RowMetrics / killfeed_layout.h). Rows stack by ACCUMULATING
+			// heights + vgap, not on a fixed grid -- a row with tall icons
+			// pushes the rest down. kfY carries that running total; it is a
+			// plain local because the loop already walks rows in draw order.
 			float deathMs = ( flTime - rgDeathNoticeList[i].flDisplayTime ) * 1000.0f;
-			float alpha, dx;
-			kf_anim_state( ageMs, deathMs, KF_ENTER_MS, KF_EXIT_MS, (float)( H * 1.4f ), &alpha, &dx );
+			float alpha = kf_row_alpha( deathMs, KF_EXIT_MS );
 
-			KF_DrawRow( &rgDeathNoticeList[i], ScreenWidth - marginRight, topY, H, alpha, (int)dx );
+			// cl_killfeed_rows caps how many are DRAWN. The entries stay in the
+			// list and keep expiring on schedule, so lowering the cap does not
+			// strand rows that would then pop in later.
+			//
+			// A row that is fading out still counts against the cap: it is still
+			// occupying its place on screen, so releasing its slot early would
+			// draw the next row ON TOP of it. With the default cap (5) and a
+			// 5-entry buffer the cap never bites; at a lower cap a new row waits
+			// out the 220ms fade, which is the correct behaviour.
+			if( kfDrawn >= kfS.maxRows )
+				continue;
+			kfDrawn++;
+
+			kfY += KF_DrawRow( &rgDeathNoticeList[i],
+							   ScreenWidth - kfM.marginX, kfY,
+							   &kfM, &kfS, alpha, NULL ) + kfM.vgap;
 			continue;
 		}
 
@@ -590,7 +956,17 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	strlcpy( killedwith, "d_", sizeof( killedwith ) );
 	strlcat( killedwith, reader.ReadString(), sizeof( killedwith ) );
 
-	// Optional extended payload (ReGameDLL): flags long, [position], [assister], [rarity long]
+	// Optional extended payload (ReGameDLL): flags long, [position], [assister],
+	// [rarity long]. VERIFIED against the vendored submodule
+	// (regamedll/dlls/multiplay_gamerules.cpp, SendDeathMessage): the server
+	// writes the flags long ONLY when iDeathMessageFlags > 0, and each optional
+	// block only when its bit is set. Flag values are the PLAYERDEATH_* enum in
+	// regamedll/dlls/gamerules.h.
+	//
+	// Reading is safe even on a truncated packet: BufferReader::Read() bounds
+	// checks and latches m_bBad, after which every read returns -1 and Valid()
+	// is false. So a malformed payload yields rarity 0 (no modifier icons)
+	// rather than garbage.
 	int deathFlags = 0, assister = 0, rarity = 0;
 	if( reader.Valid() )
 	{
@@ -603,15 +979,36 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 			assister = reader.ReadByte();
 		if( deathFlags & 0x004 ) // PLAYERDEATH_KILLRARITY
 			rarity = reader.ReadLong();
+
+		// A truncated or malformed payload must not turn into modifier icons.
+		if( reader.Bad() )
+		{
+			assister = 0;
+			rarity = 0;
+		}
 	}
 
 	gHUD.m_Scoreboard.DeathMsg( killer, victim );
 	gHUD.m_Spectator.DeathMessage(victim);
 
+	// Find a free slot.
+	//
+	// This used to test `iId == 0`, i.e. it treated "no legacy sprite index" as
+	// "slot empty". But iId comes from gHUD.GetSpriteIndex(), whose return value
+	// is a VALID index into the HUD sprite list -- and 0 is a perfectly valid
+	// index (it means the weapon's d_* sprite happens to be the first entry in
+	// hud.txt, which is a data file a mod can reorder). A row that landed on
+	// index 0 would then be treated as an empty slot: the next kill would
+	// overwrite it, and the DRAW loop would stop at it and hide every row after.
+	// GetSpriteIndex returns -1 when the sprite is missing, not 0, so the old
+	// test was not even guarding what it looked like it was guarding.
+	//
+	// An explicit occupancy flag has no such collision, and it also decouples the
+	// list from the legacy sprite entirely -- the kf path never looks at iId.
 	int i;
 	for ( i = 0; i < MAX_DEATHNOTICES; i++ )
 	{
-		if ( rgDeathNoticeList[i].iId == 0 )
+		if ( !rgDeathNoticeList[i].bUsed )
 			break;
 	}
 	if ( i == MAX_DEATHNOTICES )
@@ -642,7 +1039,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	else
 	{
 		rgDeathNoticeList[i].KillerColor = KF_TeamColor( killer );
-		strlcpy( rgDeathNoticeList[i].szKiller, killer_name, sizeof( rgDeathNoticeList[i].szKiller ) );
+		kf_sanitise_name( killer_name, rgDeathNoticeList[i].szKiller, sizeof( rgDeathNoticeList[i].szKiller ) );
 	}
 
 	// Victim
@@ -661,20 +1058,20 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	else
 	{
 		rgDeathNoticeList[i].VictimColor = KF_TeamColor( victim );
-		strlcpy( rgDeathNoticeList[i].szVictim, victim_name, sizeof( rgDeathNoticeList[i].szVictim ) );
+		kf_sanitise_name( victim_name, rgDeathNoticeList[i].szVictim, sizeof( rgDeathNoticeList[i].szVictim ) );
 	}
 
 	// Assister
 	if( assister >= 1 && assister <= MAX_PLAYERS && g_PlayerInfoList[assister].name )
 	{
 		rgDeathNoticeList[i].AssisterColor = KF_TeamColor( assister );
-		strlcpy( rgDeathNoticeList[i].szAssister, g_PlayerInfoList[assister].name, sizeof( rgDeathNoticeList[i].szAssister ) );
+		kf_sanitise_name( g_PlayerInfoList[assister].name, rgDeathNoticeList[i].szAssister, sizeof( rgDeathNoticeList[i].szAssister ) );
 	}
 
 	if( victim == 255 )
 	{
 		rgDeathNoticeList[i].bNonPlayerKill = true;
-		strlcpy( rgDeathNoticeList[i].szVictim, killedwith+2, sizeof( rgDeathNoticeList[i].szVictim ) );
+		kf_sanitise_name( killedwith+2, rgDeathNoticeList[i].szVictim, sizeof( rgDeathNoticeList[i].szVictim ) );
 	}
 	else
 	{
@@ -686,7 +1083,6 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 
 	rgDeathNoticeList[i].iHeadShotId = headshot;
 	rgDeathNoticeList[i].bLocal = ( killer_this_player || victim_this_player || g_iUser2 == killer || g_iUser2 == victim );
-	rgDeathNoticeList[i].bVictimIsLocalDeath = victim_this_player;
 
 	// legacy sprite
 	rgDeathNoticeList[i].iId = gHUD.GetSpriteIndex( killedwith );
@@ -695,9 +1091,12 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	// decode modifiers (works with legacy headshot byte alone too)
 	kf_decode_modifiers( rarity, headshot, &rgDeathNoticeList[i].mods );
 
-	rgDeathNoticeList[i].flSpawnTime = gHUD.m_flTime;
 	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime +
 		( cl_killfeed->value ? cl_killfeed_time->value : hud_deathnotice_time->value );
+
+	// The row is fully populated -- claim the slot. Set LAST so a partially
+	// built entry is never visible to the draw loop.
+	rgDeathNoticeList[i].bUsed = true;
 
 	// Play kill sound
 	if ((killer_this_player || g_iUser2 == killer) &&

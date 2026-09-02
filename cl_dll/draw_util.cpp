@@ -138,9 +138,14 @@ int DrawUtils::DrawHudString( int xpos, int ypos, int iMaxX, const char *str, in
 
 		int uch = Con_UtfProcessChar( (unsigned char)*szIt );
 
-		int next = xpos + gHUD.GetCharWidth( uch ); // variable-width fonts look cool
+		// The clip test must use the SAME width the cursor will advance by,
+		// otherwise scaled text either clips early or overruns iMaxX. The
+		// advance below is scaled, so scale the probe too.
+		int adv = gHUD.GetCharWidth( uch ); // variable-width fonts look cool
+		if( scale > 0.0f && scale != 1.0f )
+			adv = (int)( (float)adv * scale + 0.5f );
 
-		if ( next > iMaxX && iMaxX > 0 )
+		if ( xpos + adv > iMaxX && iMaxX > 0 )
 			return xpos;
 
 		xpos += TextMessageDrawChar( xpos, ypos, ( unsigned char )*szIt, r, g, b, scale );
@@ -238,7 +243,11 @@ int DrawUtils::DrawHudStringReverse( int xpos, int ypos, int iMinX, const char *
 	// 2. Backward pass to draw collected characters
 	for ( int i = chars.Count() - 1; i >= 0; i-- )
 	{
+		// Step back by the SCALED advance, otherwise scaled text walks off the
+		// left edge (the draw call below advances by the scaled width).
 		int width = gHUD.GetCharWidth( chars[i].uch );
+		if( scale > 0.0f && scale != 1.0f )
+			width = (int)( (float)width * scale + 0.5f );
 		int next = xpos - width;
 
 		if ( next < iMinX )
@@ -421,6 +430,13 @@ int DrawUtils::HudStringLen( const char *szIt, float scale )
 
 		l += gHUD.GetCharWidth( uch );
 	}
+
+	// The scale argument used to be accepted and silently dropped, so every
+	// caller asking for scaled text measured it as UNSCALED and laid the row out
+	// too narrow. Apply it here to match what DrawHudString actually draws.
+	// scale <= 0 means "engine default", i.e. no scaling.
+	if( scale > 0.0f && scale != 1.0f )
+		l = (int)( (float)l * scale + 0.5f );
 
 	return l;
 }

@@ -505,6 +505,11 @@ extern int					g_IsSpectator[MAX_PLAYERS+1];
 //
 //-----------------------------------------------------
 //
+// Max simultaneous death-notice rows. The array that uses it lives in death.cpp
+// (rgDeathNoticeList), but it is declared here so anything that includes hud.h
+// sees one definition instead of a private copy drifting out of sync.
+#define MAX_DEATHNOTICES	5
+
 class CHudDeathNotice : public CHudBase
 {
 public:
@@ -519,14 +524,14 @@ private:
 	int m_HUD_d_headshot;
 	cvar_t *hud_deathnotice_time;
 
-	// --- CS2-style killfeed (bloom) ---
+	// --- GoldClient-style killfeed (bloom) ---
 	// One HSPRITE per weapon/modifier icon, lazily loaded from sprites/kf/*.spr.
 	// Loaded in VidInit; -1/0 means "not available, fall back to legacy path".
 	void KF_LoadIcons( void );
 	int  KF_WeaponSprite( const char *killedwith ); // index into m_kfWeapon[]
-	cvar_t *cl_killfeed;         // 1 = CS2 killfeed, 0 = classic valve notice
-	cvar_t *cl_killfeed_time;    // seconds a row stays before fading
-	cvar_t *cl_killfeed_scale;   // size multiplier (phone-friendly), default 1.0
+	// The cl_killfeed_* cvars live at file scope in death.cpp: they are read by
+	// free helper functions there (metrics/style builders), and nothing outside
+	// death.cpp touches them, so exposing them on the class was pure coupling.
 };
 
 //
