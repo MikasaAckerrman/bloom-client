@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 fails=0
 
-for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds; do
+for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds test_killfeed_corner; do
 	printf '%-26s ' "$t"
 	if gcc -Wall -Wextra -I cl_dll/include -o /tmp/kf_check_bin "tests/$t.c" -lm 2>/tmp/kf_check_err; then
 		if /tmp/kf_check_bin >/tmp/kf_check_out 2>&1; then
@@ -82,6 +82,14 @@ if python3 scripts/kf_gate_check.py >/tmp/kf_check_out 2>&1; then
 	tail -1 /tmp/kf_check_out
 else
 	rg -n 'MISSING|UNMODELLED|MISMATCH|could not' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'corner harness sync'
+if python3 scripts/kf_corner_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'OUT OF SYNC|differs|count' /tmp/kf_check_out | head -5
 	fails=$((fails+1))
 fi
 

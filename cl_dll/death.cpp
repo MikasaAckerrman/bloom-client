@@ -30,6 +30,10 @@
 #include <stdio.h>
 #include <math.h>
 #include "draw_util.h"
+// full type for gEngfuncs.pTriAPI: APIProxy.h only forward-declares
+// struct triangleapi_s, and KF_DrawIcon needs RenderMode() to force the
+// additive blend mode for the icons (see the comment there).
+#include "triangleapi.h"
 #include "strl.h"
 #include "killfeed_layout.h"
 
@@ -245,7 +249,22 @@ int CHudDeathNotice :: Init( void )
 	// a user tweak cannot re-introduce a second base and break the proportions.
 	cl_killfeed             = CVAR_CREATE( "cl_killfeed",             "1", FCVAR_ARCHIVE );
 	cl_killfeed_time        = CVAR_CREATE( "cl_killfeed_time",        "6", FCVAR_ARCHIVE );
-	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",       "1", FCVAR_ARCHIVE );
+	// 1.4, not 1.0: a phone pixel is ~5x smaller than a desktop one, so copying
+	// GoldClient's proportions verbatim yields a feed that is geometrically
+	// perfect and physically unreadable. Measured (see the block above
+	// KF_RowMetrics for the arithmetic):
+	//   iQOO Neo 10, 2800x1260 on 6.78"  -> 453 PPI
+	//   reference monitor, 1920x1080/24" ->  92 PPI
+	// The reference row is 35px tall = 9.69mm = 55.4 arc-minutes at a 60cm
+	// desktop viewing distance. At scale 1.0 our row is 44px = 2.47mm = 28.3
+	// arc-minutes at a 30cm phone distance -- half the apparent size, which is
+	// exactly the "everything is tiny" complaint. Scale 2.0 restores 101% of
+	// the reference angular size but then six rows eat 40% of screen height
+	// (the reference itself only eats 20%), covering the play area.
+	// 1.4 is the compromise: 38.6 arc-minutes (70% of reference) for 28.2% of
+	// screen height, verified to stay under 30% on every common resolution
+	// from 720p through 1440p and 4:3 tablets. The user can still override.
+	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "1.4", FCVAR_ARCHIVE );
 	cl_killfeed_x           = CVAR_CREATE( "cl_killfeed_x",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_y           = CVAR_CREATE( "cl_killfeed_y",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_rows        = CVAR_CREATE( "cl_killfeed_rows",        "6", FCVAR_ARCHIVE );
@@ -350,8 +369,35 @@ int CHudDeathNotice :: VidInit( void )
 
 // ---- CS2 killfeed row drawing ------------------------------------------------
 
-// scaled draw of a kf sprite: uses pfnSPR_DrawGeneric so the native-size SPR
-// can be tinted (via SPR_Set) and blended additively at any on-screen size.
+// Scaled draw of a kf sprite at an arbitrary on-screen size.
+//
+// The blend mode has to be forced by hand here. VERIFIED against the engine
+// source (DragonSlayer, engine/client/dll_int/cl_game.c pfnSPR_DrawGeneric):
+// the blendsrc/blenddst arguments of that entry point are DEAD -- the body
+// wraps the pglBlendFunc() call in "#if 0 // REFTODO:" and only calls
+// SPR_DrawGeneric(). So passing GL_ONE/GL_ONE changes nothing; whatever blend
+// state the previous draw left behind is what the icon gets.
+//
+// What the previous draw leaves behind is kRenderTransTexture, because the
+// plate below the icons goes through FillRGBABlend -> CL_FillRGBABlend, which
+// calls ref.dllFuncs.FillRGBA( kRenderTransTexture, ... ) explicitly. In
+// GL_SetRenderMode that mode is glBlendFunc( GL_SRC_ALPHA,
+// GL_ONE_MINUS_SRC_ALPHA ) -- straight alpha, NOT additive. Under straight
+// alpha every texel with a non-zero RGB and a partial alpha paints itself onto
+// the plate, so the soft edges of the modifier art (blind_kill has 254 partial
+// texels against 114 opaque ones, 21 of which are near-black) came out as a
+// dark box. That was the reported "black background behind the blind icon".
+//
+// pTriAPI->RenderMode() is the one lever a client dll has over this: TriAPI is
+// exported to the client (common/triangleapi.h) and ref/gl/gl_triapi.c
+// TriRenderMode() maps kRenderTransAdd to glBlendFunc( GL_SRC_ALPHA, GL_ONE ),
+// i.e. real additive blending, where black texels add nothing and disappear.
+// Neither pfnSPR_DrawGeneric nor R_DrawStretchPic touches the blend state
+// afterwards (both verified in the engine source), so the mode set here is the
+// mode the quad is drawn with.
+//
+// The mode is restored to kRenderTransTexture on the way out so the next row's
+// plate and the border keep their straight-alpha blending.
 static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
 						 int r, int g, int b )
 {
@@ -363,11 +409,16 @@ static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
 	rc.bottom = SPR_Height( spr, 0 );
 
 	SPR_Set( spr, r, g, b );
-	// blendsrc GL_ONE(1), blenddst GL_ONE(1) -> additive. The sprites are
-	// GoldClient's own killfeed art converted by scripts/kf_tga2spr.py, which
-	// bakes the TGA's alpha shape into white-on-black SPR32 texels, so additive
-	// blending reproduces them exactly.
+
+	// force additive: black -> transparent, and the RGB tint used for the
+	// fade-out actually dissolves the icon instead of darkening it.
+	if( gEngfuncs.pTriAPI )
+		gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
+
 	gEngfuncs.pfnSPR_DrawGeneric( 0, x, y, &rc, 1, 1, w, h );
+
+	if( gEngfuncs.pTriAPI )
+		gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
 }
 
 // On-screen size of one kf sprite. ONE scale applies to every icon in the feed
@@ -741,7 +792,7 @@ static void KF_FilledPlate( int x, int y, int w, int h,
 	}
 }
 
-// Outline for the local player's row. Thickness t, colour rgba.
+// Outline for the local player's row. Thickness t, radius of the plate corners.
 //
 // The border STRADDLES the plate edge -- it is not inside it, nor outside it.
 // See kf_border_overhang() in killfeed_layout.h for the measurement that settles
@@ -750,17 +801,67 @@ static void KF_FilledPlate( int x, int y, int w, int h,
 //
 // The caller is responsible for reserving the overhang vertically (KF_DrawRow
 // insets the plate by it), so this function only draws.
+//
+// WHY THE CORNERS FOLLOW AN ARC, measured 2026-09-05.
+// Until now this drew four plain rectangles while KF_FilledPlate rounded the
+// plate underneath, so the red frame cut across the plate's rounded caps and
+// the whole row read as a hard rectangle -- the "квадратненький" complaint.
+// Corner profiles taken off the frames (inset of the first outline pixel per
+// scanline, walking in from each corner of the outline bbox):
+//   reference 1920x1080, outlined row y202..237:
+//     bottom left  [3, 2, 1, 1, 1, 1, ...]   <- monotone staircase = an arc
+//     bottom right [3, 2, 1, 0, 0, 0, ...]
+//   ours 2800x1260, same row:
+//     all four     [0, 0, 0, 0, 0, 0, ...]   <- dead flat = square
+// The reference staircase runs 3 -> 2 -> 1 over three scanlines, i.e. a radius
+// of ~2-3px at 1080, which is what m->corner already carries. So the fix is not
+// a new constant: it is making the border reuse the plate's own arc so the two
+// shapes are concentric by construction. dx below is the same quarter-circle
+// expression as in KF_FilledPlate, deliberately duplicated in that exact form
+// rather than factored out -- the two callers round about different rects (the
+// plate, and the plate grown by the overhang) and the shared helper would need
+// both anyway.
 static void KF_Border( int x, int y, int w, int h, int t,
-					   int r, int g, int b, int a )
+					   int r, int g, int b, int a, int radius )
 {
 	int out = kf_border_overhang( t );
 	int ox = x - out, oy = y - out;
 	int ow = w + out * 2, oh = h + out * 2;
+	int rr = radius + out;   // the outline sits `out` further out than the plate
+	int i;
 
-	FillRGBABlend( ox, oy, ow, t, r, g, b, a );              // top
-	FillRGBABlend( ox, oy + oh - t, ow, t, r, g, b, a );     // bottom
-	FillRGBABlend( ox, oy, t, oh, r, g, b, a );              // left
-	FillRGBABlend( ox + ow - t, oy, t, oh, r, g, b, a );     // right
+	if( rr < 1 || rr * 2 >= oh || rr * 2 >= ow )
+	{
+		// Degenerate: no room for an arc, fall back to the square frame.
+		FillRGBABlend( ox, oy, ow, t, r, g, b, a );              // top
+		FillRGBABlend( ox, oy + oh - t, ow, t, r, g, b, a );     // bottom
+		FillRGBABlend( ox, oy, t, oh, r, g, b, a );              // left
+		FillRGBABlend( ox + ow - t, oy, t, oh, r, g, b, a );     // right
+		return;
+	}
+
+	// Horizontal runs: inset by the arc so the corners are not overdrawn.
+	FillRGBABlend( ox + rr, oy,             ow - rr * 2, t, r, g, b, a ); // top
+	FillRGBABlend( ox + rr, oy + oh - t,    ow - rr * 2, t, r, g, b, a ); // bottom
+	// Vertical runs: same, so all four arcs are drawn by the loop below.
+	FillRGBABlend( ox,           oy + rr, t, oh - rr * 2, r, g, b, a );   // left
+	FillRGBABlend( ox + ow - t,  oy + rr, t, oh - rr * 2, r, g, b, a );   // right
+
+	// Four corner arcs. Same quarter-circle stepping as KF_FilledPlate: for each
+	// scanline of the cap, dx is how far in the shape starts, and t pixels are
+	// laid along x from there so the stroke keeps its thickness around the bend.
+	for( i = 0; i < rr; i++ )
+	{
+		int dx = rr - (int)( sqrtf( (float)( rr * rr
+					- ( rr - 1 - i ) * ( rr - 1 - i ) ) ) + 0.5f );
+		int topY = oy + i;
+		int botY = oy + oh - 1 - i;
+
+		FillRGBABlend( ox + dx,              topY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + ow - dx - t,     topY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + dx,              botY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + ow - dx - t,     botY, t, 1, r, g, b, a );
+	}
 }
 
 // Draw one row, right-aligned at rightX with its top at topY.
@@ -865,7 +966,7 @@ static int KF_DrawRow( DeathNoticeItem *item, int rightX, int topY,
 		if( border > 0 )
 		{
 			int oa = (int)( 255 * alpha );
-			KF_Border( x, plateY, w, rowH, border, 238, 23, 23, oa );
+			KF_Border( x, plateY, w, rowH, border, 238, 23, 23, oa, corner );
 		}
 	}
 

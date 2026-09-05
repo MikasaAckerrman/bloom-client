@@ -145,11 +145,37 @@ public:
 			gEngfuncs.pfnDrawConsoleStringLen( szIt, width, height );
 	}
 
+	// Both engine entry points return the cursor advance in the SAME units the
+	// x/y arguments use, so neither may be rescaled here.
+	//
+	// Traced through the engine (DragonSlayer, engine/client/cl_font.c:196-251):
+	//   CL_DrawCharacter() returns font->charWidths[number] -- untouched by
+	//   SPR_AdjustSize(), which only converts the quad geometry (x,y,w,h) from
+	//   HUD-logical to physical pixels. cl_mobile.c:63-77 builds g_scaled_font
+	//   by multiplying charWidths[] AND scale by `scale`, then calls the very
+	//   same CL_DrawCharacter. So the scaled path already returns
+	//   base_charWidth * scale, i.e. a logical advance, exactly like the
+	//   unscaled pfnDrawCharacter path right below.
+	//
+	// The old code divided the scaled advance by gHUD.m_flScale
+	// (= TrueWidth / ScreenWidth, see hud.cpp). That is a second correction on
+	// a value that never needed the first one, and m_flScale is >= 1 by
+	// construction (CL_GetScreenInfo only ever shrinks scrInfo.iWidth below
+	// refState.width), so it could only ever UNDER-advance the cursor:
+	// glyphs crawled on top of each other while HudStringLen() -- which does
+	// not divide -- kept reserving the full width, leaving a dead gap at the
+	// end of every scaled string. Invisible on desktop where m_flScale == 1,
+	// clearly visible on a phone with hud_scale set.
+	//
+	// Arrived here from upstream merge 63f346f (PR #399), not from killfeed
+	// work. Only the killfeed passes a non-zero scale today (MOTD, scoreboard
+	// and message.cpp all take the `else` branch), so this fix is confined to
+	// the scaled path.
 	static inline int TextMessageDrawChar( int x, int y, int number, int r, int g, int b, float scale = 0.0f )
 	{
 		int ret;
 		if( scale && g_iMobileAPIVersion )
-			ret = gMobileAPI.pfnDrawScaledCharacter( x, y, number, r, g, b, scale ) / gHUD.m_flScale;
+			ret = gMobileAPI.pfnDrawScaledCharacter( x, y, number, r, g, b, scale );
 		else
 			ret = gEngfuncs.pfnDrawCharacter( x, y, number, r, g, b );
 		return ret;
