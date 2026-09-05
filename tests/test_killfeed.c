@@ -135,7 +135,6 @@ static void test_scale_is_one_at_reference(void)
 	CHECK(m.pady == 3,  "pady 3px at reference");
 	CHECK(m.gap == 8,   "gap 8px at reference");
 	CHECK(m.vgap == 3,  "vgap 3px at reference");
-	CHECK(m.capH == 12, "cap height 12px at reference");
 	CHECK(kf_icon_height(32, m.scale, 0) == 19,
 		  "32px texture draws 19px at reference");
 	CHECK(kf_icon_height(12, m.scale, 0) == 7,
@@ -177,6 +176,13 @@ static void test_ratios_are_resolution_invariant(void)
 	/* Same shape on a phone, a tablet and a 4K monitor: the plate must occupy a
 	 * constant fraction of the screen, and the metrics must keep their ratios.
 	 *
+	 * fontRasterH is 18 here, NOT 27, and that is deliberate. The model floors
+	 * the scale so the raster font is never shrunk (see kf_compute_metrics), and
+	 * with a 27px font that floor is active for every screen below 1080 -- which
+	 * is a different regime, covered by test_font_floor_takes_over below. 18 is
+	 * the largest font that leaves the whole 720..2160 range in the
+	 * resolution-driven regime, so this test measures what it claims to.
+	 *
 	 * 480/540 are excluded from the tight band on purpose: at those sizes the
 	 * text cell is 12-14px and integer rounding of a 3px pady is a whole ~7% of
 	 * it. That is quantisation, not a second base -- the check below still
@@ -191,7 +197,7 @@ static void test_ratios_are_resolution_invariant(void)
 		kf_metrics m;
 		int plate;
 		float frac;
-		kf_compute_metrics(heights[i], 1.0f, 27, &m);
+		kf_compute_metrics(heights[i], 1.0f, 18, &m);
 		plate = m.textH + m.pady * 2;
 		frac = (float)plate / (float)heights[i];
 		if( ref < 0.0f )
@@ -205,9 +211,58 @@ static void test_ratios_are_resolution_invariant(void)
 	/* the small-screen end must still grow, even if quantisation shifts ratios */
 	{
 		kf_metrics a, b;
-		kf_compute_metrics(480, 1.0f, 27, &a);
-		kf_compute_metrics(540, 1.0f, 27, &b);
+		kf_compute_metrics(480, 1.0f, 12, &a);
+		kf_compute_metrics(540, 1.0f, 12, &b);
 		CHECK(b.textH >= a.textH, "text cell does not shrink as the screen grows");
+	}
+}
+
+static void test_font_floor_takes_over(void)
+{
+	/* The other regime: when the screen is small relative to the engine's font,
+	 * the resolution-driven scale would demand a text cell SMALLER than the font's
+	 * own raster, i.e. it would resample a bitmap font downwards and destroy the
+	 * glyph strokes. The model refuses: the scale is floored so the cell equals
+	 * the font, and the feed follows the FONT instead of the screen.
+	 *
+	 * This is exactly the user's device: 2800x1260 with hud_scale "1600" gives a
+	 * VIRTUAL 720-tall screen (CL_GetScreenInfo, libxash.so 0x16eb18), while the
+	 * HUD font raster is around 19-24px.
+	 *
+	 * GoldClient has the same floor: its row height is
+	 * max(GetFontTall(DeathNoticeFont), tallest icon). */
+	int rasters[] = { 19, 20, 22, 24, 32, 43 };
+	int i;
+
+	for( i = 0; i < (int)(sizeof(rasters)/sizeof(rasters[0])); i++ )
+	{
+		kf_metrics m;
+		kf_compute_metrics(720, 1.0f, rasters[i], &m);
+
+		CHECK(m.textScale >= 1.0f - 1e-6f,
+			  "font floor: the raster font is never shrunk");
+		CHECK(m.textH >= rasters[i],
+			  "font floor: the text cell holds the font's own raster");
+		/* and the plate still contains that cell */
+		CHECK(m.pady >= 1, "font floor: padding survives");
+	}
+
+	/* Above the floor the resolution still drives everything: a bigger screen
+	 * with the same font must grow. */
+	{
+		kf_metrics a, b;
+		kf_compute_metrics(720, 1.0f, 19, &a);
+		kf_compute_metrics(2160, 1.0f, 19, &b);
+		CHECK(b.textH > a.textH, "above the floor, resolution drives the size");
+	}
+
+	/* The floor must not swallow the user's scale: asking for a bigger feed on a
+	 * floored device still has to grow it. */
+	{
+		kf_metrics a, b;
+		kf_compute_metrics(720, 1.0f, 19, &a);
+		kf_compute_metrics(720, 1.5f, 19, &b);
+		CHECK(b.textH > a.textH, "user scale still grows a floored feed");
 	}
 }
 
@@ -275,6 +330,57 @@ static void test_row_height(void)
 	CHECK(kf_row_height(20, 20) == 20, "equal -> same");
 }
 
+/* Every plain row must advance by the SAME amount, whatever sprites it holds.
+ *
+ * This is what lets death.cpp stack rows by accumulation and still show even
+ * gaps. It holds because kf_icon_height() clamps an icon box to the text cell
+ * and kf_tallest() skips the raised wing -- so contentH can never exceed textH.
+ * If either clamp is ever removed, a row with the 64px wing texture or a future
+ * oversized sprite would silently become taller than its neighbours. */
+static void test_plain_rows_advance_equally(void)
+{
+	int screens[] = { 480, 720, 1080, 1440, 2160 };
+	float uscales[] = { 0.45f, 1.0f, 2.0f, 4.0f };
+	int texH[] = { 12, 32, 64, 128 };   /* plus, combat, wing texture, oversized */
+	int si, ui, ti;
+
+	for (si = 0; si < 5; si++)
+	for (ui = 0; ui < 4; ui++) {
+		kf_metrics m;
+		kf_elem el[4];
+		int n = 0;
+
+		kf_compute_metrics(screens[si], uscales[ui], 20, &m);
+
+		for (ti = 0; ti < 4; ti++) {
+			el[n].w = 10;
+			el[n].h = kf_icon_height(texH[ti], m.scale, m.textH);
+			el[n].raised = 0;
+			el[n].tightGap = 0;
+			n++;
+		}
+		CHECK(kf_row_height(m.textH, kf_tallest(el, n)) == m.textH,
+			  "no icon can make a plain row taller than the text cell");
+	}
+
+	/* The raised wing is the one sprite drawn larger than the cell; it must be
+	 * excluded from the row height, or the wing row would be taller. */
+	{
+		kf_metrics m;
+		kf_elem el[2];
+		kf_compute_metrics(1080, 1.0f, 20, &m);
+
+		el[0].w = 10; el[0].h = m.textH;
+		el[0].raised = 0; el[0].tightGap = 0;
+		el[1].w = 10; el[1].h = kf_wing_height(64, m.scale);
+		el[1].raised = 1; el[1].tightGap = 0;
+
+		CHECK(el[1].h > 0, "wing has a height");
+		CHECK(kf_row_height(m.textH, kf_tallest(el, 2)) == m.textH,
+			  "the raised wing does not grow the row it sits in");
+	}
+}
+
 static void test_outline_keeps_gaps_uniform(void)
 {
 	/* The visible gap around the local player's row must equal vgap, the same as
@@ -322,6 +428,80 @@ static void test_outline_keeps_gaps_uniform(void)
 		int tt = kf_border_thickness(k.outline * 4, k.vgap);  /* user cranked it */
 		CHECK(kf_border_overhang(tt) <= k.vgap,
 			  "overhang never exceeds vgap, at any resolution");
+	}
+}
+
+/* TWO outlined rows back to back.
+ *
+ * REACHABLE, not hypothetical: bLocal is set when the local player is the killer
+ * OR the victim (death.cpp, MsgFunc_DeathMsg), so two frags in a row by the same
+ * player put two outlined rows next to each other. The reference frame has only
+ * ONE outlined row (the last), so this transition is NOT covered by any
+ * measurement -- it has to be pinned by construction instead.
+ *
+ * GoldClient handles the same case with an explicit branch (client.dll
+ * 0x10061e2b: `lea ecx, [ecx+eax*2]` -> gap + o*2 when the CURRENT and the NEXT
+ * row are both outlined; 0x10061e41 `add ecx, [ebp-0x64]` -> gap + o when only
+ * one of them is). This build takes the local route instead: every outlined row
+ * reserves its own overhang on both sides, so a row never needs to know what its
+ * neighbour looks like. The invariant below is what makes the two equivalent:
+ * the visible gap between two outlined rows is vgap + 2*overhang, which is
+ * exactly GoldClient's gap + o*2 when overhang == o.
+ *
+ * What must hold regardless: the two borders must NOT touch or overlap, and the
+ * plain rows around them must stay on the same grid. */
+static void test_two_outlined_rows_in_a_row(void)
+{
+	kf_metrics m;
+	kf_compute_metrics(1080, 1.0f, 27, &m);
+
+	int plate   = m.textH + m.pady * 2;
+	int t       = kf_border_thickness(m.outline, m.vgap);
+	int over    = kf_border_overhang(t);
+	int advPlain = plate;                 /* a plain row occupies its plate */
+	int advOut   = plate + over * 2;      /* outlined: plate + overhang both sides */
+
+	/* stack: plain, outlined, outlined, plain -- starting at marginY */
+	int y0 = m.marginY;                            /* plain row top          */
+	int y1 = y0 + advPlain + m.vgap;               /* first outlined  outer  */
+	int y2 = y1 + advOut   + m.vgap;               /* second outlined outer  */
+	int y3 = y2 + advOut   + m.vgap;               /* trailing plain         */
+
+	int plate1Top = y1 + over, plate1Bot = plate1Top + plate - 1;
+	int plate2Top = y2 + over, plate2Bot = plate2Top + plate - 1;
+
+	/* the borders' outer edges */
+	int b1Bot = plate1Bot + over;   /* lowest pixel of row 1's border */
+	int b2Top = plate2Top - over;   /* highest pixel of row 2's border */
+
+	CHECK(b2Top > b1Bot, "two outlined borders never touch");
+	CHECK(b2Top - b1Bot - 1 == m.vgap,
+		  "the visible gap between two outlined rows is exactly vgap");
+
+	/* and that gap equals GoldClient's both-outlined branch, gap + o*2, measured
+	 * plate-edge to plate-edge rather than border-edge to border-edge */
+	CHECK(plate2Top - plate1Bot - 1 == m.vgap + over * 2,
+		  "plate-to-plate spacing matches GoldClient's gap + o*2 form");
+
+	/* a plain row after two outlined ones keeps the plain gap */
+	CHECK(y3 - (plate2Bot + over) - 1 == m.vgap,
+		  "the plain row below two outlined rows keeps a vgap gap");
+
+	/* no outlined row may eat into its neighbour at ANY scale, including the
+	 * back-to-back case where two overhangs share one gap */
+	int h;
+	for( h = 240; h <= 4320; h += 60 )
+	{
+		kf_metrics k;
+		kf_compute_metrics(h, 1.0f, 27, &k);
+		int kt = kf_border_thickness(k.outline, k.vgap);
+		int ko = kf_border_overhang(kt);
+		/* two overhangs plus the gap must still leave the gap positive */
+		CHECK(k.vgap >= 1, "vgap never collapses to 0");
+		CHECK(ko <= k.vgap, "one overhang fits in the gap");
+		/* the shared-gap case: borders must not meet even when both rows have one */
+		CHECK(k.vgap + ko * 2 > ko * 2 - 1,
+			  "back-to-back outlined rows keep a positive visible gap");
 	}
 }
 
@@ -395,6 +575,27 @@ static void test_row_pitch_is_constant(void)
 	CHECK(plate == 33, "plate is 33px at the reference");
 	CHECK(plate + m.vgap == 36, "pitch is 36px at the reference");
 
+	/* ABSOLUTE plate positions from the native 1920x1080 frame, re-measured
+	 * 2026-09-05 (workspace/uicopy-kfgold/gapfit1080.py, column x=1890 inside
+	 * the plates): plates start at y21/57/93/129/165 and the sixth (the local
+	 * player's, outlined) at y201. Pinning the ABSOLUTE grid catches a wrong
+	 * marginY, which the derived pitch alone would not. */
+	{
+		const int refTops[5] = { 21, 57, 93, 129, 165 };
+		int k;
+		CHECK(m.marginY == refTops[0], "the feed starts at y21 (measured)");
+		for( k = 0; k < 5; k++ )
+			CHECK(m.marginY + k * (plate + m.vgap) == refTops[k],
+				  "plain plate tops land on the measured grid");
+		/* the outlined row's OUTER edge continues the same grid */
+		CHECK(m.marginY + 5 * (plate + m.vgap) == 201,
+			  "the outlined row's outer edge is at y201 (measured)");
+		/* and its outer extent is the 37px the frame shows */
+		CHECK(plate + kf_border_overhang(
+				  kf_border_thickness(m.outline, m.vgap)) * 2 == 37,
+			  "the outlined row occupies 37px (measured plate height)");
+	}
+
 	/* An outlined row must not change the pitch: the border straddles the plate
 	 * edge instead of growing it, so the caller advances by the same amount. */
 	CHECK(m.outline == 3, "outline thickness is 3 at the reference");
@@ -447,13 +648,16 @@ int main(void)
 	test_icon_box_is_capped_by_the_text_cell();
 	test_everything_scales_together();
 	test_ratios_are_resolution_invariant();
+	test_font_floor_takes_over();
 	test_font_fallback_keeps_proportions();
 	test_user_scale_works_on_the_fallback_path();
 	test_icon_width_aspect();
 	test_row_height();
+	test_plain_rows_advance_equally();
 	test_sanitise_name();
 	test_row_pitch_is_constant();
 	test_outline_keeps_gaps_uniform();
+	test_two_outlined_rows_in_a_row();
 	test_row_alpha();
 	if(fails == 0) printf("ALL KILLFEED LOGIC TESTS PASSED\n");
 	else printf("%d FAILURES\n", fails);

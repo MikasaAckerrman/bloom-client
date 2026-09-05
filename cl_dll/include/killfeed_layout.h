@@ -185,10 +185,25 @@ static inline void kf_decode_modifiers( int rarity, int headshotByte,
  *
  * WHY ScreenHeight and not ScreenWidth:
  *   ScreenWidth varies with aspect ratio; on a 20:9 phone it is ~2.2x the
- *   height, so width-keyed sizes explode in landscape. GoldClient divides by
- *   ScreenHeight too (client.dll 0x10061944; the same register is divided by 480
- *   to derive aspect at 0x10016307). Keying to height makes the feed occupy the
- *   same fraction of the screen on any aspect.
+ *   height, so width-keyed sizes explode in landscape.
+ *
+ *   GoldClient keys to the HEIGHT too. PROVEN from client.dll, not assumed:
+ *   the killfeed loads its base from the BSS word at 0x101f3684
+ *   (0x10061917 movd xmm0, [0x101f3684]) and divides it by 960.0
+ *   (0x10061949 divss xmm0, [0x1017df00], and [0x1017df00] reads 960.0).
+ *
+ *   That 0x101f3684 is the HEIGHT and not the width is established at
+ *   0x10016423..0x1001644a, where the pair {0x101f3680, 0x101f3684} is used to
+ *   place a widget at the bottom-right: 0x101f3680 goes to the X argument
+ *   (pushed last, `sub esi, 0xa` = a 10px right inset) and 0x101f3684 goes to
+ *   the Y argument (`sub ecx, eax` where eax is a text height). Cross-check:
+ *   the aspect ratio at 0x10016307 divides the SAME 0x101f3684 by 480.0
+ *   ([0x1017ded8] reads 480.0) -- 480 is GoldSrc's canonical HEIGHT.
+ *
+ *   An earlier version of this comment cited 0x10061944 as the divide. That
+ *   address holds `mov eax, [0x101b0764]`, which feeds a later
+ *   `movss xmm0, [eax]` and takes no part in the division. The conclusion was
+ *   right, the evidence was not -- do not "fix" the axis by re-reading it.
  *
  * UNITS: ScreenHeight is the engine's VIRTUAL height (m_scrinfo, already
  *   divided by hud_scale), so kf_scale() is in the same space as every draw
@@ -196,8 +211,17 @@ static inline void kf_decode_modifiers( int rarity, int headshotByte,
  *
  * KF_REF_H is the reference height the measured ratios below were taken at. */
 #define KF_REF_H      1080.0f
-#define KF_SCALE_MIN  0.45f   /* clamp, GoldClient's floor at 0x1017d878 */
+/* 0.45 is GoldClient's own floor: [0x1017d878] reads 0.449999988, and the
+ * killfeed applies it as a LOWER bound at 0x10061a99 (`maxss xmm2, xmm0`
+ * against the icon scale computed just above). Verified, not inferred. */
+#define KF_SCALE_MIN  0.45f
 #define KF_SCALE_MAX  4.0f    /* sanity clamp so a fat cvar cannot fill the screen */
+
+/* The engine's HUD font is a RASTER font. Stretching it up resamples smoothly,
+ * but shrinking it drops pixel rows and breaks the glyph strokes -- the text stops
+ * looking like the reference font at all. So the text cell is never allowed to ask
+ * the font to shrink; see kf_compute_metrics(). */
+#define KF_TEXTSCALE_MIN 1.0f
 
 static inline float kf_scale( int screenH, float userScale )
 {
@@ -230,12 +254,35 @@ static inline int kf_px( float refPx, float scale )
  *   icon box     19 = 32px texture * 0.607 shared scale
  *   '+' box       7 = 12px texture * 0.607   (7/19 == 12/32 -> ONE scale)      */
 #define KF_REF_TEXT_H   27.0f  /* text cell height: plate 33 - 2*pady          */
-#define KF_REF_CAP_H    12.0f  /* cap height of the glyphs (measured, 6 rows)  */
 #define KF_REF_PADX     13.0f  /* plate edge -> first/last element box         */
 #define KF_REF_PADY      3.0f  /* plate edge -> content, top and bottom        */
 #define KF_REF_GAP       8.0f  /* between element boxes (median 8.4, n=20)     */
 #define KF_REF_GAP_TIGHT 1.0f  /* wing -> weapon: boxes essentially touch      */
 #define KF_REF_VGAP      3.0f  /* between consecutive plates                   */
+/* VGAP is 3, NOT GoldClient's hud_deathnotice_gap default of 4, and that is a
+ * measurement beating a default. Re-measured 2026-09-05 on the native 1920x1080
+ * reference (workspace/uicopy-kfgold/gapfit1080.py, column x=1890 which lies
+ * inside the plates, right of the text):
+ *
+ *   plates (y0,h): (21,33) (57,33) (93,33) (129,33) (165,33) (201,37)
+ *   gaps:          3, 3, 3, 3, 3          <- five in a row, none is 4
+ *   pitch:         36, 36, 36, 36, 36
+ *
+ * The 37px sixth plate is the local player's outlined row: 33 + 2*overhang(2),
+ * which is what kf_border_overhang() reserves.
+ *
+ * GoldClient's own default really is "4" (the string is pushed at client.dll
+ * 0x1000165b right before hud_deathnotice_gap is registered at 0x10001660, cvar
+ * object 0x101f9b10, its int value read from 0x101f9b48 at 0x10061991). Either
+ * the frame was captured with gap 3, or GoldClient measures the gap from a
+ * different edge and one pixel goes to the plate border -- the cvar value at
+ * capture time is not recoverable from the image, so this stays unresolved.
+ * It does not matter: we copy what the frame SHOWS.
+ *
+ * One real difference, deliberate: GoldClient's gap does NOT scale. It is read
+ * as an int and added to the row height directly (0x10061df3 -> 0x10061e49), so
+ * at 2x it would stay 3px and the feed would visually fuse. Ours goes through
+ * kf_px() with the one scale like every other metric. Do not "fix" this to 4. */
 #define KF_REF_CORNER    3.5f  /* plate corner bevel radius                    */
 #define KF_REF_OUTLINE   3.0f  /* local-player plate border thickness          */
 #define KF_REF_MARGIN_X 22.0f  /* feed right edge -> screen right edge         */
@@ -247,6 +294,31 @@ static inline int kf_px( float refPx, float scale )
  * texH * (19/32) * scale. Expressed as a ratio so any texture size works. */
 #define KF_ICON_TEX_REF 32.0f
 #define KF_ICON_BOX_REF 19.0f
+
+/* WHY a shared ratio does not contradict GoldClient's own formula.
+ *
+ * GoldClient computes a PER-ICON scale (client.dll 0x10061a73..0x10061a9d):
+ *     scale[i] = max( 0.45, fontTall / naturalIconH * base )
+ * and stores it into an array, one slot per icon (`movss [ebp+eax*4-0x2c]`,
+ * loop capped at 8). Read literally that NORMALISES every icon to the font
+ * height, which is not what a shared ratio does.
+ *
+ * It comes out the same anyway, because of the assets: of the 39 shipped
+ * GoldClient killfeed sprites, 37 are exactly 32px tall (widths vary 24..117).
+ * With naturalIconH constant, a per-icon scale IS a shared scale.
+ *
+ * The two exceptions are handled explicitly here:
+ *   inair_kill  64x64  -> KF_WING_* below, its own measured ratio
+ *   plus        12x12  -> the shared ratio, which is what the frame shows
+ *                         ('+' draws 7px next to 19px combat icons; GoldClient's
+ *                          formula on a 12px texture would have drawn it the
+ *                          SAME height as the combat icons, and it does not)
+ *
+ * So for the '+' the measurement beats the disassembled formula, which means
+ * naturalIconH in that formula is NOT the sprite's own height (probably a sheet
+ * or set-wide constant). That value lives in a runtime texture field
+ * (`[ecx+0xc]`) and cannot be read statically -- stated as a limit, not guessed.
+ * Do not "align" this with the disassembly: it would break the reference frame. */
 
 /* The airborne wing is drawn at its OWN ratio, and that is a measurement, not a
  * shortcut: fitting the drawn box by IoU against the reference pixels gives
@@ -268,7 +340,6 @@ typedef struct
 	float scale;     /* the one scale                     */
 	float textScale; /* multiplier to pass to the scaled text draw call */
 	int textH;       /* text cell height                  */
-	int capH;        /* glyph cap height (for centring)    */
 	int padx, pady;  /* plate padding                     */
 	int gap;         /* between elements                  */
 	int gapTight;    /* wing -> weapon                    */
@@ -288,7 +359,6 @@ static inline void kf_metrics_from_scale( float s, int fontRasterH,
 {
 	m->scale    = s;
 	m->textH    = kf_px( KF_REF_TEXT_H,   s );
-	m->capH     = kf_px( KF_REF_CAP_H,    s );
 	m->padx     = kf_px( KF_REF_PADX,     s );
 	m->pady     = kf_px( KF_REF_PADY,     s );
 	m->gap      = kf_px( KF_REF_GAP,      s );
@@ -301,7 +371,6 @@ static inline void kf_metrics_from_scale( float s, int fontRasterH,
 	m->raise    = kf_px( KF_REF_RAISE,    s );
 	/* floors: a metric that rounds to 0 would visually merge elements */
 	if( m->textH    < 1 ) m->textH    = 1;
-	if( m->capH     < 1 ) m->capH     = 1;
 	if( m->padx     < 1 ) m->padx     = 1;
 	if( m->pady     < 1 ) m->pady     = 1;
 	if( m->gap      < 1 ) m->gap      = 1;
@@ -316,11 +385,41 @@ static inline void kf_metrics_from_scale( float s, int fontRasterH,
 }
 
 /* Resolution-driven metrics: the feed keeps the same share of the screen on any
- * device, and text is stretched to match. Requires a scalable text path. */
+ * device, and text is stretched to match.
+ *
+ * ONE EXTRA CONSTRAINT, and it is not cosmetic: the engine's HUD font is a
+ * RASTER font. Stretching it UP resamples acceptably, but scaling it DOWN drops
+ * pixel rows and the glyph strokes break apart -- the names stop looking like the
+ * reference font at all.
+ *
+ * That is not a hypothetical. On a 2800x1260 phone with hud_scale "1600" the
+ * engine reports a VIRTUAL 1600x720 (CL_GetScreenInfo: libxash.so 0x16ea58
+ * compares hud_scale against 320.0f, 0x16eaac divides the physical width by it,
+ * 0x16eb18 stores physicalHeight/factor as scrInfo.iHeight). kf_scale() then sees
+ * screenH=720 -> scale 0.667 -> a text cell of 18px, while the font's own raster
+ * is around 19-24px. The result was a font resampled to ~0.74 and visibly wrong.
+ *
+ * So the scale is floored at the point where the text cell equals the font's own
+ * height. Below that the feed FOLLOWS THE FONT instead of the resolution. This is
+ * still one scale -- every metric keeps deriving from it, so the reference
+ * proportions survive; only the anchor changes. It is also what GoldClient does:
+ * its row height is max(GetFontTall(DeathNoticeFont), tallest icon), i.e. the font
+ * is a floor there too. */
 static inline void kf_compute_metrics( int screenH, float userScale,
 									   int fontRasterH, kf_metrics *m )
 {
-	kf_metrics_from_scale( kf_scale( screenH, userScale ), fontRasterH, m );
+	float s = kf_scale( screenH, userScale );
+
+	if( fontRasterH > 0 )
+	{
+		/* the scale at which the text cell is exactly the font's raster height */
+		float sFont = (float)fontRasterH / KF_REF_TEXT_H;
+		if( sFont > KF_SCALE_MAX ) sFont = KF_SCALE_MAX;
+		if( s < sFont )
+			s = sFont;
+	}
+
+	kf_metrics_from_scale( s, fontRasterH, m );
 }
 
 /* Fallback when the text cannot be scaled (no mobile API, or hud_textmode 0).
@@ -551,6 +650,20 @@ static inline int kf_layout_row( kf_elem *el, int n, int gap, int gapTight,
 	return x + padx;
 }
 
+/* How many elements would actually paint something.
+ *
+ * An element with w <= 0 is a sprite that failed to load: kf_layout_row skips it
+ * without leaving a gap. If NO element has width the row has no content at all,
+ * and the caller must not paint a bare plate for it. */
+static inline int kf_visible_count( const kf_elem *el, int n )
+{
+	int i, c = 0;
+	for( i = 0; i < n; i++ )
+		if( el[i].w > 0 )
+			c++;
+	return c;
+}
+
 /* Tallest element in a row, used for the row height.
  *
  * RAISED elements are EXCLUDED. Measured justification: the wing overhangs the
@@ -588,10 +701,8 @@ static inline int kf_tallest( const kf_elem *el, int n )
  * Earlier I claimed "the wing's ink top is flush with the plate top". That was an
  * artefact: the scan only looked INSIDE the plate, so it could not see the part
  * sticking out above, and reported the crop's edge as the icon's edge. */
-static inline int kf_elem_y( const kf_elem *el, int plateTop, int rowCenterY,
-							 int raiseLift )
+static inline int kf_elem_y( const kf_elem *el, int rowCenterY, int raiseLift )
 {
-	(void)plateTop;
 	if( !el->raised )
 		return rowCenterY - el->h / 2;
 	return rowCenterY - el->h / 2 - raiseLift;

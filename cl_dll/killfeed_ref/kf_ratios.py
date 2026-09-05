@@ -17,8 +17,21 @@
 #
 # WHY ScreenHeight and not ScreenWidth: width varies with aspect ratio (a 20:9
 # phone is ~2.2x wider than tall), so width-keyed sizes explode in landscape.
-# GoldClient divides by ScreenHeight too (client.dll 0x10061944; the same
-# register is divided by 480 to derive aspect at 0x10016307).
+#
+# GoldClient keys to the HEIGHT too. PROVEN from client.dll, not assumed: the
+# killfeed loads its base from the BSS word at 0x101f3684 (0x10061917
+# `movd xmm0, [0x101f3684]`) and divides it by 960.0 (0x10061949
+# `divss xmm0, [0x1017df00]`, and [0x1017df00] reads 960.0).
+#
+# That 0x101f3684 is the HEIGHT is established at 0x10016423..0x1001644a: the
+# pair {0x101f3680, 0x101f3684} places a widget bottom-right, 0x101f3680 -> the
+# X argument (`sub esi, 0xa`, a 10px right inset), 0x101f3684 -> the Y argument
+# (`sub ecx, eax` with eax a text height). Cross-check: the aspect ratio at
+# 0x10016307 divides the SAME 0x101f3684 by 480.0 -- GoldSrc's canonical HEIGHT.
+#
+# An earlier version of this comment cited 0x10061944 as the divide. That
+# address holds `mov eax, [0x101b0764]` and takes no part in it. The conclusion
+# was right, the evidence was not -- do not "fix" the axis by re-reading it.
 #
 # UNITS: screen_h is the engine's VIRTUAL height (m_scrinfo, already divided by
 # hud_scale), the same space every killfeed draw call uses.
@@ -26,7 +39,9 @@
 import struct as _struct
 
 REF_H      = 1080.0   # reference frame height the numbers below were measured at
-SCALE_MIN  = 0.45     # clamp floor  (GoldClient's own floor, client.dll 0x1017d878)
+SCALE_MIN  = 0.45     # GoldClient's own floor: [0x1017d878] reads 0.449999988
+                      # and the killfeed applies it as a LOWER bound at
+                      # 0x10061a99 (`maxss xmm2, xmm0`). Verified, not inferred.
 SCALE_MAX  = 4.0      # clamp ceiling so a fat cvar cannot fill the screen
 
 # ---- row metrics, in REFERENCE pixels (at REF_H) ---------------------------
@@ -37,12 +52,19 @@ SCALE_MAX  = 4.0      # clamp ceiling so a fat cvar cannot fill the screen
 #   icon box     19 = 32px texture * 0.607 shared scale
 #   '+' box       7 = 12px texture * 0.607   (7/19 == 12/32 -> ONE scale)
 REF_TEXT_H   = 27.0   # text cell height: plate 33 - 2*pady
-REF_CAP_H    = 12.0   # cap height of the glyphs (measured over 6 rows)
 REF_PADX     = 13.0   # plate edge -> first/last element box
 REF_PADY     = 3.0    # plate edge -> content, top and bottom
 REF_GAP      = 8.0    # between element boxes (median 8.4, n=20)
 REF_GAP_TIGHT = 1.0   # wing -> weapon: boxes essentially touch
-REF_VGAP     = 3.0    # between consecutive plates
+REF_VGAP     = 3.0    # between consecutive plates -- MEASURED, not GoldClient's
+                      # hud_deathnotice_gap default of 4. Re-measured 2026-09-05
+                      # on the native 1920x1080 frame: plates at y21/57/93/129/
+                      # 165 are 33px with FIVE 3px gaps and a constant 36px
+                      # pitch; the 37px sixth plate is the outlined local row
+                      # (33 + 2*overhang). GoldClient's default is really "4"
+                      # (pushed at client.dll 0x1000165b), but the frame shows 3
+                      # and the frame is what we copy. Also: their gap does NOT
+                      # scale (int, added directly at 0x10061df3), ours does.
 REF_CORNER   = 3.5    # plate corner bevel radius
 REF_OUTLINE  = 3.0    # local-player plate border thickness
 REF_MARGIN_X = 22.0   # feed right edge -> screen right edge
@@ -54,6 +76,22 @@ REF_RAISE    = 11.0   # airborne wing: lift above the row centre
 ICON_TEX_REF = 32.0
 ICON_BOX_REF = 19.0
 
+# WHY a shared ratio does not contradict GoldClient's own formula.
+#
+# GoldClient computes a PER-ICON scale (client.dll 0x10061a73..0x10061a9d):
+#     scale[i] = max(0.45, fontTall / naturalIconH * base)
+# stored one slot per icon. Read literally that normalises every icon to the
+# font height. It comes out the same anyway: of the 39 shipped GoldClient
+# killfeed sprites, 37 are exactly 32px tall (widths vary 24..117), so with
+# naturalIconH constant a per-icon scale IS a shared scale.
+#
+# Exceptions: inair_kill 64x64 has its own ratio (WING_* below); plus 12x12 uses
+# the shared ratio, which is what the frame shows -- '+' draws 7px next to 19px
+# combat icons, while GoldClient's formula on a 12px texture would have drawn it
+# the same height as them. So naturalIconH there is NOT the sprite's own height;
+# it lives in a runtime texture field ([ecx+0xc]) and cannot be read statically.
+# Do not "align" this with the disassembly: it would break the reference frame.
+
 # The airborne wing has its OWN measured ratio: fitting the drawn box by IoU
 # against the reference pixels gives 25px from a 64px texture (k = 0.39), while
 # the same fit on the weapon in the same row gives 20px from 32px (k = 0.625).
@@ -64,11 +102,39 @@ WING_BOX_REF = 25.0
 
 # Plate colour. GoldClient scheme BgColor (46,43,42) at alpha 136 -- a faint
 # lift over the scene (+6..+9 luminance on the reference), not a heavy tile.
+# imm32 0x882a2b2e, written at client.dll 0x1006123e right before the GetColor
+# call for "DeathNotice/BgColor" (ApplySchemeSettings 0x100611B0).
 PLATE_RGB   = (46, 43, 42)
 PLATE_ALPHA = 136
 
-# Local-player outline colour, scheme OutlineFgColor.
+# Local-player outline colour, scheme OutlineFgColor: imm32 0xff1717ee written at
+# client.dll 0x10061484.
+#
+# CONFIRMED IN PIXELS 2026-09-05 (workspace/uicopy-kfgold/outlinecolor.py): the
+# outlined row on the native 1080p frame occupies y201..y237, and sampling only
+# inside the feed (x 1700..1909, so the game scene cannot swamp the median) gives
+# a band core of (191,36,34). Distances: OutlineFgColor 50.0,
+# HighlightBgColorDead2 (240,45,45) 51.0, HighlightBgColorKill2 (94,146,203)
+# 223.8. Blue is ruled out by a wide margin; the two reds are one point apart and
+# CANNOT be told apart from a 3px band in a JPEG -- the measured value is darker
+# than both because of compression and the plate bleeding through. Stated as a
+# limit, not resolved by guessing.
 OUTLINE_RGB = (238, 23, 23)
+
+# NOT IMPLEMENTED, deliberately: GoldClient's scheme also carries four highlight
+# colours for "this kill involves me", verified from the same function --
+#   HighlightBgColorKill  (36,45,211,62)   0x3ed32d24 @ 0x10061300  fill,   I killed
+#   HighlightBgColorDead  (225,65,65,105)  0x694141e1 @ 0x10061361  fill,   I died
+#   HighlightBgColorKill2 (94,146,203,255) 0xffcb925e @ 0x100613c2  outline,I killed
+#   HighlightBgColorDead2 (240,45,45,255)  0xff2d2df0 @ 0x10061423  outline,I died
+# The alphas tell the structure: 62/105 are translucent FILLS, 255 are opaque
+# OUTLINES, and GoldClient distinguishes killing from dying (blue vs red).
+#
+# This build draws one red outline for any bLocal row and no fill. That matches
+# the reference: the outlined row there is red (measured above), and neither
+# reference frame shows a highlight fill at all. Implementing the four would mean
+# drawing something the reference does not show, so it stays out until there is a
+# frame that shows it.
 
 # Name colours: CT = steel blue, T = amber/gold. MEASURED from the reference the
 # user approved (screenshot 1000312966.png), glyph cores only, so antialiasing
@@ -115,7 +181,6 @@ def metrics_from_scale(s, font_raster_h):
     m = dict(
         scale=s,
         textH=px(REF_TEXT_H, s),
-        capH=px(REF_CAP_H, s),
         padx=px(REF_PADX, s),
         pady=px(REF_PADY, s),
         gap=px(REF_GAP, s),
@@ -129,7 +194,7 @@ def metrics_from_scale(s, font_raster_h):
     )
     # floors: a metric that rounds to 0 would visually merge elements.
     # gapTight is allowed to be 0 -- on the reference the wing touches the gun.
-    for k in ("textH", "capH", "padx", "pady", "gap", "vgap", "corner", "outline"):
+    for k in ("textH", "padx", "pady", "gap", "vgap", "corner", "outline"):
         if m[k] < 1:
             m[k] = 1
     m["textScale"] = (_f32(_f32(m["textH"]) / _f32(font_raster_h))
@@ -138,8 +203,20 @@ def metrics_from_scale(s, font_raster_h):
 
 
 def compute_metrics(screen_h, user_scale, font_raster_h):
-    """Mirror of kf_compute_metrics(): resolution-driven, needs scalable text."""
-    return metrics_from_scale(scale(screen_h, user_scale), font_raster_h)
+    """Mirror of kf_compute_metrics(): resolution-driven, needs scalable text.
+
+    Includes the raster-font floor: the engine's HUD font must never be asked to
+    shrink (a bitmap font loses strokes when resampled down), so the scale is
+    floored at the point where the text cell equals the font's own height. Below
+    that the feed follows the FONT rather than the resolution."""
+    s = scale(screen_h, user_scale)
+    if font_raster_h > 0:
+        s_font = _f32(_f32(font_raster_h) / _f32(REF_TEXT_H))
+        if s_font > SCALE_MAX:
+            s_font = SCALE_MAX
+        if s < s_font:
+            s = s_font
+    return metrics_from_scale(s, font_raster_h)
 
 
 def compute_metrics_for_font(font_raster_h, user_scale=1.0):
@@ -204,17 +281,6 @@ def row_height(text_h, tallest_icon_h):
     return tallest_icon_h if tallest_icon_h > text_h else text_h
 
 
-def row_pitch(row_h, vgap):
-    """Vertical advance to the next row: simply rowHeight + vgap.
-
-    An earlier version mirrored a kf_row_pitch() that added (thickness-1) per
-    outlined neighbour, following GoldClient's disassembly. The reference frame
-    refutes that: the pitch is a constant 36px on all five steps, including the
-    step into the local player's outlined row (whose plate is the same 33px --
-    the border straddles the plate edge instead of growing it)."""
-    return row_h + vgap
-
-
 def border_overhang(thickness):
     """Mirror of kf_border_overhang(). How far the local-player outline sticks
     out past the plate edge.
@@ -247,7 +313,7 @@ def row_alpha(death_age_ms, exit_ms):
     return _f32(1.0 - p)
 
 
-def elem_y(raised, plate_top, row_center_y, h, raise_lift=0):
+def elem_y(raised, row_center_y, h, raise_lift=0):
     """Mirror of kf_elem_y(): the airborne wing is lifted above the row centre
     (and overhangs the plate); everything else is vertically centred."""
     if not raised:

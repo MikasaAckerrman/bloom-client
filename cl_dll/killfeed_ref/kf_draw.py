@@ -238,9 +238,9 @@ def render_feed(img, rows, user_scale=1.0, font_raster_h=None,
                              fill=e["color"] + (255,))  # faux-bold
             else:
                 im = spr_img(e["spr"]).resize((e["w"], e["h"]), Image.LANCZOS)
-                # the airborne wing icon is TOP-aligned to the plate; all other
-                # icons are vertically centred (MEASURED on the reference).
-                iy = R.elem_y(e.get("raised"), plate_y, cy, e["h"], m["raise_"])
+                # the airborne wing is lifted above the row centre and overhangs
+                # the plate; all other icons are vertically centred (MEASURED).
+                iy = R.elem_y(e.get("raised"), cy, e["h"], m["raise_"])
                 img.alpha_composite(im, (ex, iy))
 
         row_info.append(dict(w=w, h=row_h, y=plate_y, advance=advance))

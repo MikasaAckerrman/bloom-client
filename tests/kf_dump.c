@@ -53,7 +53,6 @@ int main(void)
 		kf_metrics m;
 		kf_compute_metrics( screens[i], uscales[j], fonts[k], &m );
 		printf("m_textH,%d,%.2f,%d,0,0,%d\n",    screens[i], uscales[j], fonts[k], m.textH);
-		printf("m_capH,%d,%.2f,%d,0,0,%d\n",     screens[i], uscales[j], fonts[k], m.capH);
 		printf("m_padx,%d,%.2f,%d,0,0,%d\n",     screens[i], uscales[j], fonts[k], m.padx);
 		printf("m_pady,%d,%.2f,%d,0,0,%d\n",     screens[i], uscales[j], fonts[k], m.pady);
 		printf("m_gap,%d,%.2f,%d,0,0,%d\n",      screens[i], uscales[j], fonts[k], m.gap);
@@ -154,7 +153,7 @@ int main(void)
 			cy = top + 24;
 			e.h = hh; e.raised = lift;
 			printf("elemy,%d,%d,%d,%d,%d,%d\n", top, cy, lift, hh, rl,
-				kf_elem_y(&e, top, cy, rl));
+				kf_elem_y(&e, cy, rl));
 		}
 	}
 

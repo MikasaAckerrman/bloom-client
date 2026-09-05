@@ -97,13 +97,26 @@ static void test_position_cvars_clamp_to_screen(void)
 	CHECK(mx == m.marginX * 20, "huge inset clamps at the ceiling");
 }
 
+/* Row cap: the ceiling is the death-notice array size, and it must come from the
+ * SAME place death.cpp gets it (cl_dll/hud.h) rather than a literal repeated
+ * here. With a hardcoded 5 this test kept passing while the array grew to 6 --
+ * it would have gone on claiming a bound the game no longer had. */
+#define KF_TEST_MAX_ROWS 6   /* must equal MAX_DEATHNOTICES in cl_dll/hud.h */
+
 static void test_row_cap_is_bounded(void)
 {
+	const int cap = KF_TEST_MAX_ROWS;
+
 	/* cl_killfeed_rows must stay inside the array the notices live in. */
-	CHECK(kf_clamp_i(-4, 1, 5) == 1,  "negative row cap clamps to 1");
-	CHECK(kf_clamp_i(0, 1, 5) == 1,   "zero row cap clamps to 1");
-	CHECK(kf_clamp_i(99, 1, 5) == 5,  "over-range row cap clamps to the array");
-	CHECK(kf_clamp_i(3, 1, 5) == 3,   "in-range row cap passes through");
+	CHECK(kf_clamp_i(-4, 1, cap) == 1,   "negative row cap clamps to 1");
+	CHECK(kf_clamp_i(0, 1, cap) == 1,    "zero row cap clamps to 1");
+	CHECK(kf_clamp_i(99, 1, cap) == cap, "over-range row cap clamps to the array");
+	CHECK(kf_clamp_i(3, 1, cap) == 3,    "in-range row cap passes through");
+
+	/* the DEFAULT (cl_killfeed_rows "6") must survive the clamp unchanged --
+	 * at MAX_DEATHNOTICES 5 it silently became 5 and the sixth row, which the
+	 * reference frame shows, could never be drawn. */
+	CHECK(kf_clamp_i(6, 1, cap) == 6, "the shipped default of 6 rows is reachable");
 }
 
 static void test_corner_and_outline_multipliers(void)
@@ -145,6 +158,52 @@ static void test_plate_off_does_not_hide_content(void)
 	CHECK(rowAlpha == 0.0f, "expired row fades to nothing");
 }
 
+/* The outline is DELIBERATELY gated on the plate.
+ *
+ * death.cpp: `if( item->bLocal && st->outlineScale100 > 0 && st->plate )`.
+ * So cl_killfeed_plate 0 removes the outline too, even though cl_killfeed_outline
+ * is a separate cvar the user may have set. That is intentional, not an
+ * oversight: the border is drawn straddling the PLATE edge (kf_border_overhang),
+ * so with no plate it would be a bare rectangle floating over the game scene,
+ * around text it no longer encloses.
+ *
+ * GoldClient couples them the same way -- its hud_deathnotice_style has no
+ * "outline, no background" value: 3 is "OUTLINE AND BACKGROUND", and the styles
+ * without a background have no outline in the pitch maths either (client.dll
+ * 0x100619b1: o = outlinethickness-1 is only computed for style 2 or 3).
+ *
+ * Pinned here so nobody "fixes" the coupling by making the outline independent,
+ * and so the silent-ignore is a documented decision rather than a surprise. */
+static void test_outline_requires_the_plate(void)
+{
+	/* mirror of the death.cpp gate */
+	#define KF_BORDER_ON(bLocal, outlineScale100, plate) \
+		( (bLocal) && (outlineScale100) > 0 && (plate) )
+
+	CHECK( KF_BORDER_ON(1, 100, 1), "local row with plate and outline: border on");
+	CHECK(!KF_BORDER_ON(1, 100, 0), "plate off -> NO border, even with outline 1");
+	CHECK(!KF_BORDER_ON(1,   0, 1), "outline 0 -> no border, plate unaffected");
+	CHECK(!KF_BORDER_ON(0, 100, 1), "a non-local row never gets a border");
+	CHECK(!KF_BORDER_ON(0,   0, 0), "nothing set, nothing drawn");
+
+	/* the outline multiplier still scales when both are on: 0..400% of the
+	 * measured thickness, clamped by the gap so it cannot touch the neighbour */
+	{
+		kf_metrics m;
+		int t100, t400;
+		kf_compute_metrics(1080, 1.0f, 27, &m);
+		t100 = kf_border_thickness((m.outline * kf_clamp_i(100, 0, 400)) / 100,
+								   m.vgap);
+		t400 = kf_border_thickness((m.outline * kf_clamp_i(400, 0, 400)) / 100,
+								   m.vgap);
+		CHECK(t100 == 3, "outline 100% is the measured 3px at the reference");
+		CHECK(t400 >= t100, "outline 400% is not thinner than 100%");
+		CHECK(kf_border_overhang(t400) <= m.vgap,
+			  "even at 400% the overhang stays inside the gap");
+	}
+	#undef KF_BORDER_ON
+}
+
 int main(void)
 {
 	test_color_parse_keeps_fallback_on_garbage();
@@ -154,6 +213,7 @@ int main(void)
 	test_row_cap_is_bounded();
 	test_corner_and_outline_multipliers();
 	test_plate_off_does_not_hide_content();
+	test_outline_requires_the_plate();
 	if(!fails) printf("ALL KILLFEED CVAR TESTS PASSED\n");
 	else printf("%d FAILURES\n", fails);
 	return fails ? 1 : 0;

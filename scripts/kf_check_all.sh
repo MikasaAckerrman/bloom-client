@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 fails=0
 
-for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots; do
+for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds; do
 	printf '%-26s ' "$t"
 	if gcc -Wall -Wextra -I cl_dll/include -o /tmp/kf_check_bin "tests/$t.c" -lm 2>/tmp/kf_check_err; then
 		if /tmp/kf_check_bin >/tmp/kf_check_out 2>&1; then
@@ -44,6 +44,46 @@ for f in cl_dll/death.cpp cl_dll/draw_util.cpp; do
 		fails=$((fails+1))
 	fi
 done
+
+printf '%-26s ' 'weapon table'
+if python3 scripts/kf_weapon_table_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	tail -4 /tmp/kf_check_out
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'row cap'
+if python3 scripts/kf_rowcap_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	tail -6 /tmp/kf_check_out
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'push sequence'
+if python3 scripts/kf_pushcount_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	tail -8 /tmp/kf_check_out
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'colours'
+if python3 scripts/kf_colors_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	rg -n 'MISMATCH|NOT FOUND' /tmp/kf_check_out | head -6
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'border gate'
+if python3 scripts/kf_gate_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	rg -n 'MISSING|UNMODELLED|MISMATCH|could not' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
 
 printf '%-26s ' 'sprite round-trip'
 GC_TGA=/tmp/minis-goldclient-20260828/out3/app/cstrike/gfx/hud/deathnotice

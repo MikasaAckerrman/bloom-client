@@ -132,15 +132,15 @@ static void test_wing_uses_tight_gap(void)
 		int rowH = kf_row_height(M.textH, kf_tallest(el, n)) + M.pady * 2;
 		int cy = top + rowH / 2;
 		CHECK(el[1].raised == 1, "wing is flagged raised");
-		CHECK(kf_elem_y(&el[1], top, cy, M.raise)
+		CHECK(kf_elem_y(&el[1], cy, M.raise)
 			  == cy - el[1].h / 2 - M.raise,
 			  "raised wing is lifted above the row centre");
-		CHECK(kf_elem_y(&el[1], top, cy, M.raise) < top,
+		CHECK(kf_elem_y(&el[1], cy, M.raise) < top,
 			  "at the reference metrics the wing overhangs the plate top");
 		CHECK(el[2].raised == 0, "weapon is not raised");
-		CHECK(kf_elem_y(&el[2], top, cy, M.raise) == cy - el[2].h / 2,
+		CHECK(kf_elem_y(&el[2], cy, M.raise) == cy - el[2].h / 2,
 			  "weapon stays vertically centred");
-		CHECK(kf_elem_y(&el[0], top, cy, M.raise) == cy - el[0].h / 2,
+		CHECK(kf_elem_y(&el[0], cy, M.raise) == cy - el[0].h / 2,
 			  "text stays vertically centred");
 	}
 
@@ -258,6 +258,31 @@ static void test_first_element_no_leading_gap(void)
 	CHECK(el[1].x == PADX, "first visible element starts at padx");
 }
 
+static void test_empty_row_has_no_visible_elements(void)
+{
+	/* A row whose every sprite failed to load and whose names are absent has
+	 * NOTHING to paint. kf_layout_row still returns padx*2 for it, so death.cpp
+	 * uses kf_visible_count to suppress the row instead of painting a bare
+	 * plate. Reachable: the server sends killer 0 for a non-player kill (which
+	 * suppresses the killer name), the victim's userinfo may not have arrived,
+	 * and the fallback skull sprite may be missing. */
+	kf_elem el[KF_MAX_ELEMS];
+	int n = 0, w;
+
+	el[n].slot = 0; el[n].w = 0; el[n].h = 0;
+	el[n].tightGap = 0; el[n].raised = 0; n++;
+	el[n].slot = 0; el[n].w = 0; el[n].h = 0;
+	el[n].tightGap = 0; el[n].raised = 0; n++;
+
+	w = kf_layout_row(el, n, GAP, GAPW, PADX);
+	CHECK(kf_visible_count(el, n) == 0, "an all-missing row has no visible elements");
+	CHECK(w == PADX * 2, "and it still measures padx*2 -- hence the guard");
+
+	/* one real element is enough to make the row legitimate */
+	push_icon(el, &n, TEX_WPN_W, TEX_WPN_H, 0, 0);
+	CHECK(kf_visible_count(el, n) == 1, "one loaded sprite makes the row visible");
+}
+
 static void test_row_height_from_content(void)
 {
 	/* at the reference dimension every icon normalises to the font height */
@@ -281,6 +306,7 @@ int main(void)
 	test_minimal_row();
 	test_missing_sprite_no_hole();
 	test_first_element_no_leading_gap();
+	test_empty_row_has_no_visible_elements();
 	test_row_height_from_content();
 	if(!fails) printf("ALL KILLFEED GEOMETRY TESTS PASSED\n");
 	else printf("%d FAILURES\n", fails);

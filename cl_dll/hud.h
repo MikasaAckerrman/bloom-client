@@ -505,10 +505,16 @@ extern int					g_IsSpectator[MAX_PLAYERS+1];
 //
 //-----------------------------------------------------
 //
-// Max simultaneous death-notice rows. The array that uses it lives in death.cpp
-// (rgDeathNoticeList), but it is declared here so anything that includes hud.h
-// sees one definition instead of a private copy drifting out of sync.
-#define MAX_DEATHNOTICES	5
+// Max simultaneous death-notice rows. The array that uses it (rgDeathNoticeList)
+// lives in death.cpp; the define is here so anything that includes hud.h sees
+// one definition instead of a private copy drifting out of sync.
+//
+// 6, not 5: GoldClient's own limit is hud_deathnotice_max, whose default is the
+// string "6" pushed at client.dll 0x1000169b right before the cvar is registered
+// at 0x100016a0/0x100016a5 (object 0x101f9b88). The reference frame every
+// killfeed proportion was measured on also shows SIX rows -- at 5 this build
+// could not reproduce its own reference.
+#define MAX_DEATHNOTICES	6
 
 class CHudDeathNotice : public CHudBase
 {

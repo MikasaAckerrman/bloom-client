@@ -51,7 +51,6 @@ HANDLERS = {
     "px":    lambda a, b, c, d, e: R.px(float(a), R.scale(int(b), 1.0)),
 
     "m_textH":     _metric("textH"),
-    "m_capH":      _metric("capH"),
     "m_padx":      _metric("padx"),
     "m_pady":      _metric("pady"),
     "m_gap":       _metric("gap"),
@@ -81,8 +80,7 @@ HANDLERS = {
     "iconw": lambda a, b, c, d, e: R.icon_width(int(a), int(b), int(c)),
     "rowh":  lambda a, b, c, d, e: R.row_height(int(a), int(b)),
     "alpha": lambda a, b, c, d, e: R.row_alpha(float(a), float(b)),
-    "elemy": lambda a, b, c, d, e: R.elem_y(int(c), int(a), int(b), int(d),
-                                            int(e)),
+    "elemy": lambda a, b, c, d, e: R.elem_y(int(c), int(b), int(d), int(e)),
     "tallest": lambda a, b, c, d, e: R.tallest([
         dict(w=40, h=27, raised=False),
         dict(w=20, h=19, raised=False),
