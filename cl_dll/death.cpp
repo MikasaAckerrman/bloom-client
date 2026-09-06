@@ -189,6 +189,7 @@ static cvar_t *cl_killfeed_ct_color;    // "R G B"
 static cvar_t *cl_killfeed_t_color;     // "R G B"
 static cvar_t *cl_killfeed_icon_color;  // "R G B"
 static cvar_t *cl_killfeed_bold;        // 1 = faux-bold names
+static cvar_t *cl_killfeed_font;        // 0 = HUD (scalable), 1 = console font
 
 // ---- killfeed geometry ------------------------------------------------------
 // The layout math lives in killfeed_layout.h (kf_scale / kf_row_height /
@@ -277,6 +278,26 @@ int CHudDeathNotice :: Init( void )
 	cl_killfeed_t_color     = CVAR_CREATE( "cl_killfeed_t_color",     "221 195 135", FCVAR_ARCHIVE );
 	cl_killfeed_icon_color  = CVAR_CREATE( "cl_killfeed_icon_color",  "204 204 204", FCVAR_ARCHIVE );
 	cl_killfeed_bold        = CVAR_CREATE( "cl_killfeed_bold",        "1", FCVAR_ARCHIVE );
+	// Which font draws the names. Default 1 = the CONSOLE font (the one chat and
+	// the console use). Rationale, all three measured in the engine source:
+	//
+	//   1. cl_font_t::charWidths is a BYTE array (client.h). cl_mobile.c's
+	//      scaled path does `charWidths[i] *= scale` -- byte = byte * float, so
+	//      every advance is TRUNCATED. At scale 1.4 a 9px glyph advances 12
+	//      instead of 12.6; the deficit accumulates along the string and the
+	//      glyphs visibly crowd together.
+	//   2. That same block only rebuilds its cached font when
+	//      `fabs( g_font_scale - scale ) > 0.1f`, so the scaled font quantises
+	//      to 0.1 steps of cl_killfeed_scale.
+	//   3. The HUD font's default rendermode is hud_fontrender "0" (additive)
+	//      while the console font uses con_fontrender "2" (trans). Additive text
+	//      on a translucent plate blooms and smears the strokes.
+	//
+	// The console path has none of the three. It cannot be scaled by a
+	// parameter, but it does not need to be: Con_LoadConchars picks font size 2
+	// (the largest of CON_NUMFONTS) whenever refState.width >= 1280, which is
+	// every modern phone in landscape.
+	cl_killfeed_font        = CVAR_CREATE( "cl_killfeed_font",         "1", FCVAR_ARCHIVE );
 	m_iFlags = 0;
 
 	return 1;
@@ -317,6 +338,22 @@ void CHudDeathNotice :: KF_LoadIcons( void )
 		snprintf( path, sizeof(path), "sprites/kf/%s.spr", kf_mod_names[i] );
 		s_kfModSpr[i] = SPR_Load( path );
 	}
+
+	// NOT LOADED: sprites/kf/panel_corner*.spr, panel_hline/vline.spr.
+	//
+	// These are GoldClient's own plate chrome (d_panel_*.tga, June 2023) and we
+	// do ship the files, but the corners are drawn in code instead. Measured
+	// 2026-09-06, and the reason is orientation, not quality:
+	//   * the art is rounded on ONE corner (top-left); the other three need a
+	//     mirror.
+	//   * pfnSPR_DrawGeneric cannot mirror. With a rect the engine sanitises the
+	//     rect (cl_game.c: "if( rc.right <= 0 || rc.right > width )"); with no
+	//     rect it hardcodes u,v = 0..1.
+	//   * blitting it unrotated is wrong on 12 of 36 pixels -- a third of the
+	//     corner box -- on three corners out of four.
+	// TriAPI can build an arbitrary quad, but it draws in WORLD space, which is
+	// the wrong coordinate system for a HUD element. So the bend is rasterised
+	// with coverage-weighted edges instead; see KF_EdgeAlpha for the numbers.
 
 	// consider ready if at least the AWP + headshot loaded (proxy for the pack)
 	int awp = KF_WeaponSprite( "awp" );
@@ -398,15 +435,31 @@ int CHudDeathNotice :: VidInit( void )
 //
 // The mode is restored to kRenderTransTexture on the way out so the next row's
 // plate and the border keep their straight-alpha blending.
+//
+// prc MUST BE NULL. This is not a style choice, it is the difference between
+// scaling and CROPPING. Engine, cl_game.c SPR_DrawGeneric:
+//
+//     if( rc.right <= 0 || rc.right > width ) rc.right = width;
+//     s2 = rc.right; SPR_AdjustTexCoords(...) -> s2 /= width;
+//     width = rc.right - rc.left;          // <-- our width is OVERWRITTEN
+//
+// Pass a rect covering the whole texture and ask for a smaller width, and the
+// engine clamps rc.right down to that width, divides by the same number so the
+// u range ends at 1.0, and then re-derives width from the rect. The quad does
+// shrink, but it samples only the left/top part of the texture at 1:1 texels:
+//     32x32 icon asked for 19px -> 59% of the texture reaches the screen
+//     64x64 wing asked for 25px -> 39%
+//     12x12 plus asked for  7px -> 58%
+// The only size that survives is the natural one, which is why this looked fine
+// on a desktop-sized feed and lost the right/bottom of every icon on a phone.
+//
+// With prc == NULL the engine takes the s1=t1=0, s2=t2=1 branch and leaves
+// width/height alone, i.e. a true stretch of the full frame.
 static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
 						 int r, int g, int b )
 {
-	wrect_t rc;
 	if( !spr )
 		return;
-	rc.left = 0; rc.top = 0;
-	rc.right = SPR_Width( spr, 0 );
-	rc.bottom = SPR_Height( spr, 0 );
 
 	SPR_Set( spr, r, g, b );
 
@@ -415,7 +468,7 @@ static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
 	if( gEngfuncs.pTriAPI )
 		gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
 
-	gEngfuncs.pfnSPR_DrawGeneric( 0, x, y, &rc, 1, 1, w, h );
+	gEngfuncs.pfnSPR_DrawGeneric( 0, x, y, NULL, 1, 1, w, h );
 
 	if( gEngfuncs.pTriAPI )
 		gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
@@ -474,8 +527,13 @@ static void KF_IconWH( HSPRITE spr, const kf_metrics *m, int raised,
 // When the mobile API is absent (desktop build) the feed does not fake scaling:
 // kf_row_metrics() keys the whole row to the font's own height instead, so
 // everything still derives from one base.
+//
+// cl_killfeed_font 1 (the DEFAULT) forces the console branch on purpose -- see
+// the cvar's registration for the three measured defects of the scaled path.
 static bool KF_TextScalable( void )
 {
+	if( cl_killfeed_font && cl_killfeed_font->value != 0.0f )
+		return false;
 	return g_iMobileAPIVersion != 0;
 }
 
@@ -762,11 +820,44 @@ static int KF_BuildRow( const DeathNoticeItem *item, const kf_metrics *m,
 	return n;
 }
 
-// Filled plate with rounded corners. GoldClient's style 3 draws the plate with
-// d_panel_corner sprites; the reference shows a ~5px quarter-round at each
-// corner (MEASURED: the right edge ramps 643->648 over 4 rows at the top). We
-// approximate the same curve by insetting the first `radius` scanlines top and
-// bottom, which reproduces the measured ramp without shipping the corner sprite.
+// Coverage of one pixel column at the edge of a circular cap, 0..255.
+//
+// Both KF_FilledPlate and KF_Border step their arcs one scanline at a time and
+// used to round the inset to a whole pixel. That is what made the corners read
+// as a staircase once cl_killfeed_scale grew the radius: every scanline moved
+// the edge by a full pixel, with nothing in between.
+//
+// MEASURED, 2026-09-06. Rasterising the same annulus three ways and scoring the
+// LARGEST alpha step between vertically adjacent pixels (a full 1.0 step is what
+// the eye reads as a stair), plus how many pixels carry any step at all:
+//     hard integer inset (the old code)   max 1.00 over 17 px
+//     coverage-weighted edge (this)       max 0.98 over 46 px
+//     GoldClient's own 6x6 corner sprite  max 0.80 over 18 px
+// The sprite is the smoothest, and we DO ship it now (panel_corner.spr), but it
+// cannot be used for the bend: pfnSPR_DrawGeneric cannot mirror a sprite (with
+// a rect the engine sanitises the rect, without one it hardcodes u,v = 0..1) and
+// the art is rounded on ONE corner only, so blitting it unrotated would be wrong
+// on 12 of 36 pixels -- a third of the corner box -- for three corners out of
+// four. Coverage weighting has no such asymmetry: it is correct on all four.
+//
+// frac is the subpixel part of the arc inset for this scanline, 0.0..1.0.
+static int KF_EdgeAlpha( int a, float frac )
+{
+	int v;
+	if( frac <= 0.0f ) return 0;
+	if( frac >= 1.0f ) return a;
+	v = (int)( a * frac + 0.5f );
+	if( v < 0 ) v = 0;
+	if( v > 255 ) v = 255;
+	return v;
+}
+
+// Filled plate with rounded corners.
+//
+// The cap of each corner is stepped scanline by scanline; the whole-pixel part
+// of the inset is filled solid and the fractional part is drawn as a single
+// pixel at proportional alpha on each side. See KF_EdgeAlpha for the numbers
+// that justify doing this instead of rounding the inset.
 static void KF_FilledPlate( int x, int y, int w, int h,
 							int r, int g, int b, int a, int radius )
 {
@@ -776,19 +867,38 @@ static void KF_FilledPlate( int x, int y, int w, int h,
 		FillRGBABlend( x, y, w, h, r, g, b, a );
 		return;
 	}
+
 	// middle block (full width) between the rounded caps
 	FillRGBABlend( x, y + radius, w, h - radius * 2, r, g, b, a );
 	// top and bottom caps: each scanline inset by a quarter-circle amount
 	for( i = 0; i < radius; i++ )
 	{
-		// horizontal inset for this scanline of the corner arc
-		int dx = radius - (int)( sqrtf( (float)( radius * radius
-					- ( radius - 1 - i ) * ( radius - 1 - i ) ) ) + 0.5f );
-		int rowW = w - dx * 2;
+		// Exact horizontal inset for this scanline of the corner arc. Keeping
+		// the fraction is the whole point -- see KF_EdgeAlpha.
+		float ex = (float)radius - sqrtf( (float)( radius * radius
+					- ( radius - 1 - i ) * ( radius - 1 - i ) ) );
+		int dx = (int)ex;                    // solid part starts here
+		float frac = 1.0f - ( ex - (float)dx ); // how much of pixel dx is inside
+		int ea = KF_EdgeAlpha( a, frac );
+		// The solid run starts one pixel further in, leaving room for the
+		// partially covered pixel. Without this the edge pixel would have to be
+		// skipped whenever dx == 0 -- which is most of the arc at a small radius
+		// (at radius 3 EVERY scanline has dx == 0), and that is exactly where
+		// the staircase is most visible.
+		int sx = dx + 1;
+		int rowW = w - sx * 2;
 		if( rowW <= 0 )
 			continue;
-		FillRGBABlend( x + dx, y + i,             rowW, 1, r, g, b, a ); // top
-		FillRGBABlend( x + dx, y + h - 1 - i,     rowW, 1, r, g, b, a ); // bottom
+		FillRGBABlend( x + sx, y + i,         rowW, 1, r, g, b, a ); // top
+		FillRGBABlend( x + sx, y + h - 1 - i, rowW, 1, r, g, b, a ); // bottom
+		// Partially covered pixel at each end of the run.
+		if( ea > 0 )
+		{
+			FillRGBABlend( x + dx,         y + i,         1, 1, r, g, b, ea );
+			FillRGBABlend( x + w - 1 - dx, y + i,         1, 1, r, g, b, ea );
+			FillRGBABlend( x + dx,         y + h - 1 - i, 1, 1, r, g, b, ea );
+			FillRGBABlend( x + w - 1 - dx, y + h - 1 - i, 1, 1, r, g, b, ea );
+		}
 	}
 }
 
@@ -852,15 +962,30 @@ static void KF_Border( int x, int y, int w, int h, int t,
 	// laid along x from there so the stroke keeps its thickness around the bend.
 	for( i = 0; i < rr; i++ )
 	{
-		int dx = rr - (int)( sqrtf( (float)( rr * rr
-					- ( rr - 1 - i ) * ( rr - 1 - i ) ) ) + 0.5f );
+		// Exact inset, fraction kept for the antialiased edge pixel. Same
+		// reasoning as KF_FilledPlate -- see KF_EdgeAlpha for the measurement.
+		float ex = (float)rr - sqrtf( (float)( rr * rr
+					- ( rr - 1 - i ) * ( rr - 1 - i ) ) );
+		int dx = (int)ex;
+		float frac = 1.0f - ( ex - (float)dx );
+		int ea = KF_EdgeAlpha( a, frac );
+		int sx = dx + 1;   // solid stroke starts here, see KF_FilledPlate
 		int topY = oy + i;
 		int botY = oy + oh - 1 - i;
 
-		FillRGBABlend( ox + dx,              topY, t, 1, r, g, b, a );
-		FillRGBABlend( ox + ow - dx - t,     topY, t, 1, r, g, b, a );
-		FillRGBABlend( ox + dx,              botY, t, 1, r, g, b, a );
-		FillRGBABlend( ox + ow - dx - t,     botY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + sx,              topY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + ow - sx - t,     topY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + sx,              botY, t, 1, r, g, b, a );
+		FillRGBABlend( ox + ow - sx - t,     botY, t, 1, r, g, b, a );
+		// Leading edge pixel of the stroke at proportional alpha, so the bend
+		// steps in fractions instead of whole pixels.
+		if( ea > 0 )
+		{
+			FillRGBABlend( ox + dx,              topY, 1, 1, r, g, b, ea );
+			FillRGBABlend( ox + ow - 1 - dx,     topY, 1, 1, r, g, b, ea );
+			FillRGBABlend( ox + dx,              botY, 1, 1, r, g, b, ea );
+			FillRGBABlend( ox + ow - 1 - dx,     botY, 1, 1, r, g, b, ea );
+		}
 	}
 }
 

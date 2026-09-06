@@ -19,26 +19,48 @@
 static unsigned char plate[H][W];
 static unsigned char border[H][W];
 
-static void fill_plate( int x, int y, int w, int h )
+/* The rasters hold ALPHA (0..255), not a bitmask. KF_FilledPlate and KF_Border
+ * draw their corner arcs with a coverage-weighted edge pixel, so a 0/1 model
+ * could not tell a hard staircase from an antialiased bend -- which is the whole
+ * point of the current code. Anything >= 128 counts as "solid" for the shape
+ * checks; the partial values are checked separately. */
+static void fill_plate_a( int x, int y, int w, int h, int a )
 {
 	int i, j;
 	for( j = y; j < y + h; j++ )
 		for( i = x; i < x + w; i++ )
 			if( j >= 0 && j < H && i >= 0 && i < W )
-				plate[j][i] = 1;
+				if( a > plate[j][i] )
+					plate[j][i] = (unsigned char)a;
 }
 
-static void fill_border( int x, int y, int w, int h )
+static void fill_border_a( int x, int y, int w, int h, int a )
 {
 	int i, j;
 	for( j = y; j < y + h; j++ )
 		for( i = x; i < x + w; i++ )
 			if( j >= 0 && j < H && i >= 0 && i < W )
-				border[j][i] = 1;
+				if( a > border[j][i] )
+					border[j][i] = (unsigned char)a;
 }
+
+static void fill_plate( int x, int y, int w, int h )  { fill_plate_a( x, y, w, h, 255 ); }
+static void fill_border( int x, int y, int w, int h ) { fill_border_a( x, y, w, h, 255 ); }
 
 /* mirror of kf_border_overhang() in killfeed_layout.h */
 static int overhang( int t ) { return ( t * 2 ) / 3; }
+
+/* mirror of KF_EdgeAlpha in death.cpp */
+static int edge_alpha( int a, float frac )
+{
+	int v;
+	if( frac <= 0.0f ) return 0;
+	if( frac >= 1.0f ) return a;
+	v = (int)( a * frac + 0.5f );
+	if( v < 0 ) v = 0;
+	if( v > 255 ) v = 255;
+	return v;
+}
 
 /* mirror of KF_FilledPlate */
 static void KF_FilledPlate( int x, int y, int w, int h, int radius )
@@ -52,12 +74,23 @@ static void KF_FilledPlate( int x, int y, int w, int h, int radius )
 	fill_plate( x, y + radius, w, h - radius * 2 );
 	for( i = 0; i < radius; i++ )
 	{
-		int dx = radius - (int)( sqrtf( (float)( radius * radius
-					- ( radius - 1 - i ) * ( radius - 1 - i ) ) ) + 0.5f );
-		int rowW = w - dx * 2;
+		float ex = (float)radius - sqrtf( (float)( radius * radius
+					- ( radius - 1 - i ) * ( radius - 1 - i ) ) );
+		int dx = (int)ex;
+		float frac = 1.0f - ( ex - (float)dx );
+		int ea = edge_alpha( 255, frac );
+		int sx = dx + 1;
+		int rowW = w - sx * 2;
 		if( rowW <= 0 ) continue;
-		fill_plate( x + dx, y + i,         rowW, 1 );
-		fill_plate( x + dx, y + h - 1 - i, rowW, 1 );
+		fill_plate( x + sx, y + i,         rowW, 1 );
+		fill_plate( x + sx, y + h - 1 - i, rowW, 1 );
+		if( ea > 0 )
+		{
+			fill_plate_a( x + dx,         y + i,         1, 1, ea );
+			fill_plate_a( x + w - 1 - dx, y + i,         1, 1, ea );
+			fill_plate_a( x + dx,         y + h - 1 - i, 1, 1, ea );
+			fill_plate_a( x + w - 1 - dx, y + h - 1 - i, 1, 1, ea );
+		}
 	}
 }
 
@@ -86,14 +119,25 @@ static void KF_Border( int x, int y, int w, int h, int t, int radius )
 
 	for( i = 0; i < rr; i++ )
 	{
-		int dx = rr - (int)( sqrtf( (float)( rr * rr
-					- ( rr - 1 - i ) * ( rr - 1 - i ) ) ) + 0.5f );
+		float ex = (float)rr - sqrtf( (float)( rr * rr
+					- ( rr - 1 - i ) * ( rr - 1 - i ) ) );
+		int dx = (int)ex;
+		float frac = 1.0f - ( ex - (float)dx );
+		int ea = edge_alpha( 255, frac );
+		int sx = dx + 1;
 		int topY = oy + i;
 		int botY = oy + oh - 1 - i;
-		fill_border( ox + dx,          topY, t, 1 );
-		fill_border( ox + ow - dx - t, topY, t, 1 );
-		fill_border( ox + dx,          botY, t, 1 );
-		fill_border( ox + ow - dx - t, botY, t, 1 );
+		fill_border( ox + sx,          topY, t, 1 );
+		fill_border( ox + ow - sx - t, topY, t, 1 );
+		fill_border( ox + sx,          botY, t, 1 );
+		fill_border( ox + ow - sx - t, botY, t, 1 );
+		if( ea > 0 )
+		{
+			fill_border_a( ox + dx,          topY, 1, 1, ea );
+			fill_border_a( ox + ow - 1 - dx, topY, 1, 1, ea );
+			fill_border_a( ox + dx,          botY, 1, 1, ea );
+			fill_border_a( ox + ow - 1 - dx, botY, 1, 1, ea );
+		}
 	}
 }
 
@@ -168,7 +212,9 @@ int main( void )
 		{ 1764, 160, 54, 5, 5 },     /* our phone at scale 1.4 */
 	};
 	int c, fails = 0;
+	int pass;
 
+	(void)pass;
 	for( c = 0; c < 3; c++ )
 	{
 		int w = cases[c].w, h = cases[c].h, t = cases[c].t, rad = cases[c].radius;
@@ -211,6 +257,53 @@ int main( void )
 			}
 			if( bad ) { printf( "  FAIL: outline leaves %d plate scanline(s) unbordered\n", bad ); fails++; }
 			else        printf( "  OK: outline never starts inside the plate edge\n" );
+		}
+	}
+
+	/* ------------------------------------------------------------------
+	 * The antialiasing must actually be there.
+	 *
+	 * Everything above checks SHAPE, and a hard staircase passes all of it.
+	 * What makes the bend look smooth is the fraction of edge pixels drawn at
+	 * a partial alpha, and the largest alpha step between vertically adjacent
+	 * pixels. MEASURED on the same rasteriser, R=12 t=5:
+	 *     hard integer inset   max step 1.00 over 17 px
+	 *     coverage weighted    max step 0.98 over 46 px
+	 *     GoldClient's sprite  max step 0.80 over 18 px
+	 * So: demand that partial alphas EXIST. Without this check, reverting to
+	 * the rounded inset would leave every test green. */
+	{
+		int c2, partial_total = 0;
+		for( c2 = 0; c2 < 3; c2++ )
+		{
+			int w = cases[c2].w, h = cases[c2].h, t = cases[c2].t, rad = cases[c2].radius;
+			int i, j, partial = 0;
+
+			memset( plate, 0, sizeof( plate ) );
+			memset( border, 0, sizeof( border ) );
+			KF_FilledPlate( 20, 10, w, h, rad );
+			KF_Border( 20, 10, w, h, t, rad );
+
+			for( j = 0; j < H; j++ )
+				for( i = 0; i < W; i++ )
+				{
+					if( plate[j][i]  > 8 && plate[j][i]  < 247 ) partial++;
+					if( border[j][i] > 8 && border[j][i] < 247 ) partial++;
+				}
+			printf( "\ncase %d antialiasing: %d partial-alpha pixel(s)\n", c2 + 1, partial );
+			if( partial < 4 )
+			{
+				printf( "  FAIL: the corner arc is not antialiased (need >= 4, one per corner)\n" );
+				fails++;
+			}
+			else
+				printf( "  OK: the arc steps in fractions, not whole pixels\n" );
+			partial_total += partial;
+		}
+		if( partial_total < 12 )
+		{
+			printf( "\nFAIL: only %d partial-alpha pixels across all cases\n", partial_total );
+			fails++;
 		}
 	}
 

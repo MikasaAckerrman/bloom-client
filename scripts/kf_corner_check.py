@@ -107,8 +107,12 @@ if g_src != g_har:
     fails.append('KF_Border degenerate guard differs\n  death.cpp: %s\n  harness  : %s'
                  % (g_src, g_har))
 
+# The harness rasterises into an ALPHA buffer, so it has both a full-alpha
+# helper and an explicit-alpha one. Both mirror a FillRGBABlend call in
+# death.cpp; list the longer name first so the regex alternation does not
+# match the prefix and leave the "_a" behind.
 s_src = fill_sequence(src_border, ['FillRGBABlend'])
-s_har = fill_sequence(har_border, ['fill_border'])
+s_har = fill_sequence(har_border, ['fill_border_a', 'fill_border'])
 if len(s_src) != len(s_har):
     fails.append('KF_Border fill-call count differs: death.cpp %d, harness %d'
                  % (len(s_src), len(s_har)))
@@ -128,7 +132,7 @@ if a_src != a_har:
                  % (a_src, a_har))
 
 s_src = fill_sequence(src_plate, ['FillRGBABlend'])
-s_har = fill_sequence(har_plate, ['fill_plate'])
+s_har = fill_sequence(har_plate, ['fill_plate_a', 'fill_plate'])
 if len(s_src) != len(s_har):
     fails.append('KF_FilledPlate fill-call count differs: death.cpp %d, harness %d'
                  % (len(s_src), len(s_har)))
