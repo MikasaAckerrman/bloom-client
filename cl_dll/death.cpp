@@ -537,6 +537,29 @@ static bool KF_TextScalable( void )
 	return g_iMobileAPIVersion != 0;
 }
 
+// Can the TEXT be faded by scaling its colour?
+//
+// Only when the glyphs blend ADDITIVELY, i.e. on the scalable path with
+// hud_fontrender left additive. Everything else (the console font, or a HUD font
+// the user switched to a trans rendermode) would go dark instead of transparent
+// -- see the long note in KF_DrawName.
+//
+// This is deliberately a separate predicate from KF_TextScalable: they answer
+// different questions ("which font draws" vs "may the colour carry opacity") and
+// a user who sets hud_fontrender 2 must not get black text on the scalable path.
+static bool KF_TextFadeable( void )
+{
+	if( !KF_TextScalable() )
+		return false;   // console font: trans blend, colour is not opacity
+	// hud_fontrender belongs to the ENGINE, not to gHUD, so it is read through
+	// the cvar API rather than a client-side pointer. 0 = additive (fade works),
+	// anything else = trans/normal. A missing cvar reads as 0.0, which matches
+	// the engine default (additive) -- the safe answer either way.
+	if( gEngfuncs.pfnGetCvarFloat( "hud_fontrender" ) != 0.0f )
+		return false;
+	return true;
+}
+
 // Width of a killfeed string at the row's text scale.
 static int KF_TextWidth( const char *str, float textScale )
 {
@@ -555,11 +578,34 @@ static void KF_DrawName( int x, int y, const char *name, float *rgb,
 						 float alpha, float textScale, int bold )
 {
 	int r = 255, g = 255, b = 255;
+	// FADING TEXT: only legal where the blend is ADDITIVE.
+	//
+	// No text entry point in the engine takes an alpha at all:
+	//     pfnDrawSetTextColor( float r, float g, float b )
+	//     pfnDrawCharacter( int x, int y, int ch, int r, int g, int b )
+	// (engine/APIProxy.h:250-252). So the only lever on opacity is the colour.
+	//
+	// Additive (hud_fontrender 0, the scalable path): the glyph's contribution to
+	// the frame is linear in the colour, so scaling RGB by the row alpha IS a
+	// correct fade -- it lands on the untouched backdrop.
+	//
+	// Trans (con_fontrender 2, the console path): the glyph REPLACES the backdrop
+	// weighted by the FONT's own coverage, which we cannot change. Scaling RGB
+	// there does not make the glyph transparent, it makes it BLACK -- a dark
+	// stroke painted at full opacity. That was the regression: switching the feed
+	// to the console font moved the text into a blend where the old arithmetic
+	// means something else.
+	//
+	// So on the trans path the row keeps its colour and is simply cut when the
+	// fade ends. That is also what the reference does with hud_deathnotice_fade
+	// off -- rows vanish rather than dissolve -- so it is authentic, not merely a
+	// workaround for a missing alpha.
+	float fade = KF_TextFadeable() ? alpha : 1.0f;
 	if( rgb )
 	{
-		r = (int)( rgb[0] * alpha * 255.0f );
-		g = (int)( rgb[1] * alpha * 255.0f );
-		b = (int)( rgb[2] * alpha * 255.0f );
+		r = (int)( rgb[0] * fade * 255.0f );
+		g = (int)( rgb[1] * fade * 255.0f );
+		b = (int)( rgb[2] * fade * 255.0f );
 	}
 	if( KF_TextScalable() )
 	{
@@ -569,13 +615,17 @@ static void KF_DrawName( int x, int y, const char *name, float *rgb,
 			DrawUtils::DrawHudString( x + 1, y, 0, name, r, g, b, textScale );
 		return;
 	}
+	// SetConsoleTextColor takes floats in 0..1, so `fade` is applied here in the
+	// same units rather than through the 0..255 ints above.
 	if( rgb )
-		DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
+		DrawUtils::SetConsoleTextColor( rgb[0]*fade, rgb[1]*fade, rgb[2]*fade );
 	DrawUtils::DrawConsoleString( x, y, name );
 	if( bold )
 	{
+		// The colour has to be re-armed: DrawConsoleString resets it on the
+		// hud_textmode branch (draw_util.h clears `color` after each draw).
 		if( rgb )
-			DrawUtils::SetConsoleTextColor( rgb[0]*alpha, rgb[1]*alpha, rgb[2]*alpha );
+			DrawUtils::SetConsoleTextColor( rgb[0]*fade, rgb[1]*fade, rgb[2]*fade );
 		DrawUtils::DrawConsoleString( x + 1, y, name );
 	}
 }

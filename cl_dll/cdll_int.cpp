@@ -60,27 +60,54 @@ static IGameMenuExports *GetNativeMenuExports( void )
 	return static_cast<IGameMenuExports *>( menuFactory( GAMEMENUEXPORTS_INTERFACE_VERSION, NULL ) );
 }
 
-static bool HUD_MessageBox( const char *msg )
-{
-	gEngfuncs.Con_Printf( "%s", msg );
-
-	if( g_iMobileAPIVersion && gMobileAPI.pfnSys_Warn )
-	{
-		gMobileAPI.pfnSys_Warn( "%s", msg );
-		return true;
-	}
-
-	return false;
-}
-
+// The native VGUI-style menu is OPTIONAL. When the host app does not export a
+// "MenuFactory" object the client falls back to the cfg-driven touch menus
+// (ShowVGUIMenu -> "exec touch/chooseteam.cfg" and friends), which is a complete
+// path, not a degraded one -- launchers that ship no MenuFactory are perfectly
+// playable.
+//
+// So its absence is a NOTE, not an error, and it must be said ONCE:
+//   * HUD_Init runs on every connect, and g_pMenu stays null when the object is
+//     missing, so the old code re-probed and re-printed on every single map
+//     change -- that is the console spam.
+//   * It also went through Sys_Warn, which raises a modal warning box on Android.
+//     A popup on every connect for an optional feature is worse than the missing
+//     feature.
+//
+// The message keeps one line of diagnosis (WHY it was unavailable), because
+// "unavailable" alone does not distinguish a launcher without the object from a
+// version mismatch in the interface string.
 static void LoadMenuInterface( void )
 {
+	static bool s_menuProbed = false;
+
 	if( g_pMenu )
 		return;
 
 	g_pMenu = GetNativeMenuExports();
-	if( !g_pMenu )
-		HUD_MessageBox( "Error: native object \"MenuFactory\" is unavailable\n" );
+	if( g_pMenu || s_menuProbed )
+		return;
+
+	s_menuProbed = true;
+
+	if( !g_iMobileAPIVersion || !gMobileAPI.pfnGetNativeObject )
+	{
+		gEngfuncs.Con_DPrintf( "Menu: no mobile API, using touch menus\n" );
+	}
+	else if( !gMobileAPI.pfnGetNativeObject( "MenuFactory" ) )
+	{
+		gEngfuncs.Con_DPrintf( "Menu: host exports no \"MenuFactory\", "
+							   "using touch menus\n" );
+	}
+	else
+	{
+		// The factory exists but refused the interface -- that IS worth a visible
+		// line, since it means a real version mismatch rather than a launcher
+		// that simply has no native menu.
+		gEngfuncs.Con_Printf( "Menu: \"MenuFactory\" does not provide %s, "
+							  "using touch menus\n",
+							  GAMEMENUEXPORTS_INTERFACE_VERSION );
+	}
 }
 
 void InitInput (void);

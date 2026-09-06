@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 fails=0
 
-for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds test_killfeed_corner; do
+for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds test_killfeed_corner test_killfeed_fade test_menu_probe; do
 	printf '%-26s ' "$t"
 	if gcc -Wall -Wextra -I cl_dll/include -o /tmp/kf_check_bin "tests/$t.c" -lm 2>/tmp/kf_check_err; then
 		if /tmp/kf_check_bin >/tmp/kf_check_out 2>&1; then
@@ -35,7 +35,7 @@ else
 	fails=$((fails+1))
 fi
 
-for f in cl_dll/death.cpp cl_dll/draw_util.cpp; do
+for f in cl_dll/death.cpp cl_dll/draw_util.cpp cl_dll/cdll_int.cpp; do
 	printf '%-26s ' "syntax $(basename "$f")"
 	if sh scripts/kf_syntax_check.sh "$f" >/tmp/kf_check_out 2>&1; then
 		echo OK
@@ -90,6 +90,54 @@ if python3 scripts/kf_corner_check.py >/tmp/kf_check_out 2>&1; then
 	tail -1 /tmp/kf_check_out
 else
 	grep -nE 'OUT OF SYNC|differs|count' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'apk signing stable'
+if python3 scripts/kf_signing_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'FAILED|EMPTY|missing|does not' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'signing negative control'
+if sh scripts/negctl_signing.sh >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'FAIL' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'menu probe sync'
+if python3 scripts/kf_menu_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'OUT OF SYNC|differs|latch|Sys_Warn|expected' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'menu negative control'
+if sh scripts/negctl_menu.sh >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'FAIL' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'fade harness sync'
+if python3 scripts/kf_fade_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'OUT OF SYNC|differs|expected|not scaled|missing' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'fade negative control'
+if sh scripts/negctl_fade.sh >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'FAIL' /tmp/kf_check_out | head -5
 	fails=$((fails+1))
 fi
 
