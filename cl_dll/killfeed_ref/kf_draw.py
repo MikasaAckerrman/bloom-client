@@ -28,8 +28,10 @@ SPR_DIR = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                  "..", "..", "3rdparty", "cs16client-extras", "sprites", "kf"))
 FONT_PATH = "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf"
-CAP_RATIO = 0.444       # cap-height / textH, MEASURED on the native
-                        # reference: cap 12px at text cell 27 (six rows agreed)
+CAP_RATIO = 0.70        # cap-height / textH. GoldClient: cap 30px in the 43px
+                        # cell (measured 87..116 on the 632p frame). Our native
+                        # 0.444 (cap 12 in cell 27) drew glyphs 20% shorter than
+                        # GC at the same cell size; 0.70 matches GC.
 # Name colours live in kf_ratios (R.CT_RGB / R.T_RGB / R.GREY_RGB) so the C and
 # the preview cannot disagree -- they used to be duplicated here and drifted.
 
@@ -213,9 +215,12 @@ def render_feed(img, rows, user_scale=1.0, font_raster_h=None,
 
         layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
         dl = ImageDraw.Draw(layer, "RGBA")
+        # CS2/scaleform style: rounded plate, soft edge mask instead of a hard
+        # outline. radius 3px in UI space (m["corner"]), alpha .9 like sf.
         dl.rounded_rectangle([px0, plate_y, px0 + w - 1, plate_y + row_h - 1],
                              radius=m["corner"], fill=(pr, pg, pb, pa))
         if border:
+            # killer row: 2px #e10000-ish border hugging the rounded plate
             for k in range(border):
                 dl.rounded_rectangle(
                     [px0 - overhang + k, plate_y - overhang + k,

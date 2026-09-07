@@ -55,8 +55,8 @@ static void test_color_parse_clamps_channels(void)
 	CHECK(g == 0,   "negative channel clamps to 0");
 	CHECK(b == 255, "way-over channel clamps to 255");
 
-	parse_color("129 154 202", &r, &g, &b);
-	CHECK(r == 129 && g == 154 && b == 202, "valid colour parses exactly");
+	parse_color("131 165 222", &r, &g, &b);
+	CHECK(r == 131 && g == 165 && b == 222, "valid colour parses exactly");
 }
 
 static void test_scale_cvar_cannot_break_proportions(void)

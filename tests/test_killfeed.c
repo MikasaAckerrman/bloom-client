@@ -134,11 +134,11 @@ static void test_scale_is_one_at_reference(void)
 	CHECK(m.padx == 13, "padx 13px at reference");
 	CHECK(m.pady == 13, "pady 13px at reference (GC plate 53, text/plate 0.51)");
 	CHECK(m.gap == 8,   "gap 8px at reference");
-	CHECK(m.vgap == 3,  "vgap 3px at reference");
-	CHECK(kf_icon_height(32, m.scale, 0) == 19,
-		  "32px texture draws 19px at reference");
-	CHECK(kf_icon_height(12, m.scale, 0) == 7,
-		  "12px '+' texture draws 7px at reference");
+	CHECK(m.vgap == 6,  "vgap 6px at reference (GC vgap/plate 0.114)");
+	CHECK(kf_icon_height(32, m.scale, 0) == 26,
+		  "32px texture draws 26px at reference (GC icon/plate 0.49)");
+	CHECK(kf_icon_height(12, m.scale, 0) == 10,
+		  "12px '+' texture draws 10px at reference");
 }
 
 static void test_everything_scales_together(void)
@@ -281,7 +281,7 @@ static void test_font_fallback_keeps_proportions(void)
 	kf_compute_metrics_for_font(54, 1.0f, &m);
 	CHECK(m.textH == 54, "fallback tracks a bigger font");
 	CHECK(m.padx >= 25 && m.padx <= 27, "fallback padx doubles with the font");
-	CHECK(kf_icon_height(32, m.scale, 0) >= 37 && kf_icon_height(32, m.scale, 0) <= 39,
+	CHECK(kf_icon_height(32, m.scale, 0) >= 50 && kf_icon_height(32, m.scale, 0) <= 54,
 		  "fallback icons double with the font");
 }
 
@@ -409,12 +409,14 @@ static void test_outline_keeps_gaps_uniform(void)
 	int plainTop = 21 + 5 * (plate + m.vgap);   /* row 6's slot, marginY 21 */
 	int plateTop = plainTop + over;
 
-	/* Pinned to pady=13: plate 53, advance 57, row-6 grid line 21+5*56=301. */
+	/* Pinned to pady=13, vgap=6: plate 53, pitch 59, advance 57+4=57? no:
+	 * outlined row's outer edge = marginY + 5*pitch = 21+295 = 316, outer
+	 * extent = plate + 2*overhang(2) = 57. */
 	CHECK(plate == 53, "plate is 53 at the reference (GC text/plate 0.36)");
-	CHECK(plateTop == 303, "outlined plate starts at y303 (pinned grid)");
-	CHECK(plateTop + plate - 1 == 355, "outlined plate ends at y355 (pinned grid)");
-	CHECK(plainTop == 301, "its border's outer edge is on the grid line y301");
-	CHECK(plainTop + advance - 1 == 357, "outer extent ends at y357 (pinned grid)");
+	CHECK(plateTop == 318, "outlined plate starts at y318 (pinned grid)");
+	CHECK(plateTop + plate - 1 == 370, "outlined plate ends at y370 (pinned grid)");
+	CHECK(plainTop == 316, "its border's outer edge is on the grid line y316");
+	CHECK(plainTop + advance - 1 == 372, "outer extent ends at y372 (pinned grid)");
 
 	/* The gap BELOW an outlined row is vgap as well: the next row starts at
 	 * plainTop + advance + vgap, i.e. exactly vgap after the outer edge. */
@@ -575,7 +577,7 @@ static void test_row_pitch_is_constant(void)
 
 	int plate = m.textH + m.pady * 2;
 	CHECK(plate == 53, "plate is 53px at the reference (GC text/plate ratio)");
-	CHECK(plate + m.vgap == 56, "pitch is 56px at the reference");
+	CHECK(plate + m.vgap == 59, "pitch is 59px at the reference");
 
 	/* Plate positions from the native 1920x1080 frame: first plate y21
 	 * (gapfit1080.py). The MEASURED per-row grid 21/57/93/129/165 belonged to
@@ -583,15 +585,15 @@ static void test_row_pitch_is_constant(void)
 	 * is 21/77/133/189/245. What stays pinned is the START (marginY 21) and
 	 * the UNIFORM STEP, which is what the eye reads as "even spacing". */
 	{
-		const int refTops[5] = { 21, 77, 133, 189, 245 };
+		const int refTops[5] = { 39, 98, 157, 216, 275 };
 		int k;
-		CHECK(m.marginY == refTops[0], "the feed starts at y21 (measured)");
+		CHECK(m.marginY == refTops[0], "the feed starts at y39 (GC margin/pitch 0.652)");
 		for( k = 0; k < 5; k++ )
 			CHECK(m.marginY + k * (plate + m.vgap) == refTops[k],
-				  "plain plate tops land on the pady-13 grid");
+				  "plain plate tops land on the vgap-6 grid");
 		/* the outlined row's OUTER edge continues the same grid */
-		CHECK(m.marginY + 5 * (plate + m.vgap) == 301,
-			  "the outlined row's outer edge is at y301 (pady-13 grid)");
+		CHECK(m.marginY + 5 * (plate + m.vgap) == 334,
+			  "the outlined row's outer edge is at y334 (vgap-6 grid)");
 		/* and its outer extent is 53 + 2*overhang(2) = 57 */
 		CHECK(plate + kf_border_overhang(
 				  kf_border_thickness(m.outline, m.vgap)) * 2 == 57,
@@ -618,15 +620,15 @@ static void test_row_alpha(void)
 
 static void test_icon_box_is_capped_by_the_text_cell(void)
 {
-	/* MEASURED: all six reference plates are 33px = textH 27 + 2*pady 3, and the
+	/* MEASURED: all six reference plates are 53px = textH 27 + 2*pady 13, and the
 	 * row height is max(textH, tallestIcon) + 2*pady. A 64px texture at the
-	 * shared scale is 38px uncapped, which would have made its row's plate 44px.
+	 * shared scale is 52px uncapped, which would have made its row's plate 78px.
 	 * It did not, so the icon box is capped at the text cell. */
 	kf_metrics m;
 	kf_compute_metrics(1080, 1.0f, 27, &m);
 
-	CHECK(kf_icon_height(64, m.scale, 0) == 38,
-		  "uncapped, a 64px texture would be 38px");
+	CHECK(kf_icon_height(64, m.scale, 0) == 52,
+		  "uncapped, a 64px texture would be 52px");
 	CHECK(kf_icon_height(64, m.scale, m.textH) == m.textH,
 		  "capped, it stops at the text cell");
 	CHECK(kf_row_height(m.textH, kf_icon_height(64, m.scale, m.textH))
@@ -634,8 +636,8 @@ static void test_icon_box_is_capped_by_the_text_cell(void)
 		  "so the plate stays 53px (pady 13, GC proportion)");
 
 	/* the cap must not touch icons that already fit */
-	CHECK(kf_icon_height(32, m.scale, m.textH) == 19, "32px texture unaffected");
-	CHECK(kf_icon_height(12, m.scale, m.textH) == 7,  "12px '+' unaffected");
+	CHECK(kf_icon_height(32, m.scale, m.textH) == 26, "32px texture unaffected");
+	CHECK(kf_icon_height(12, m.scale, m.textH) == 10, "12px '+' unaffected");
 }
 
 int main(void)

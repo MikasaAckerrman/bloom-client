@@ -63,7 +63,8 @@ REF_PADY     = 13.0   # plate edge -> content, top and bottom.
                       # Must mirror KF_REF_PADY in killfeed_layout.h.
 REF_GAP      = 8.0    # between element boxes (median 8.4, n=20)
 REF_GAP_TIGHT = 1.0   # wing -> weapon: boxes essentially touch
-REF_VGAP     = 3.0    # between consecutive plates -- MEASURED, not GoldClient's
+REF_VGAP     = 6.0    # GC: vgap/plate = 9.5/83 = 0.114 (632p, x=1140 column).
+                      # Our 3 gave 0.057 -- half. Mirrors KF_REF_VGAP.
                       # hud_deathnotice_gap default of 4. Re-measured 2026-09-05
                       # on the native 1920x1080 frame: plates at y21/57/93/129/
                       # 165 are 33px with FIVE 3px gaps and a constant 36px
@@ -75,13 +76,14 @@ REF_VGAP     = 3.0    # between consecutive plates -- MEASURED, not GoldClient's
 REF_CORNER   = 6.0    # plate corner bevel radius (was 3.5; see killfeed_layout.h)
 REF_OUTLINE  = 3.0    # local-player plate border thickness
 REF_MARGIN_X = 22.0   # feed right edge -> screen right edge
-REF_MARGIN_Y = 21.0   # feed top -> screen top
+REF_MARGIN_Y = 39.0   # feed top -> screen top
 REF_RAISE    = 11.0   # airborne wing: lift above the row centre
 
 # Icon calibration: a 32px GoldClient combat texture draws 19px tall on the
 # reference, so any texture is drawn at texH * (19/32) * scale.
 ICON_TEX_REF = 32.0
-ICON_BOX_REF = 19.0
+ICON_BOX_REF = 26.0   # GC: 32px tex drawn 41px on 632p => 62.3 in 960 axis.
+                      # 19 gave icon/plate 0.36 vs GC 0.51. Mirrors KF_ICON_BOX_REF.
 
 # WHY a shared ratio does not contradict GoldClient's own formula.
 #
@@ -111,8 +113,8 @@ WING_BOX_REF = 25.0
 # lift over the scene (+6..+9 luminance on the reference), not a heavy tile.
 # imm32 0x882a2b2e, written at client.dll 0x1006123e right before the GetColor
 # call for "DeathNotice/BgColor" (ApplySchemeSettings 0x100611B0).
-PLATE_RGB   = (46, 43, 42)
-PLATE_ALPHA = 136
+PLATE_RGB   = (14, 14, 14)
+PLATE_ALPHA = 179   # CS2/scaleform: #0e0e0eB3 (victim bg); killer row darker below
 
 # Local-player outline colour, scheme OutlineFgColor: imm32 0xff1717ee written at
 # client.dll 0x10061484.
@@ -147,8 +149,8 @@ OUTLINE_RGB = (238, 23, 23)
 # user approved (screenshot 1000312966.png), glyph cores only, so antialiasing
 # toward the plate does not drag the value. Must match death.cpp's s_kfColor*
 # and the cl_killfeed_{ct,t,icon}_color cvar defaults.
-CT_RGB   = (129, 154, 202)
-T_RGB    = (221, 195, 135)
+CT_RGB   = (131, 165, 222)   # scaleform #83a5de
+T_RGB    = (232, 197, 111)   # scaleform #e8c56f
 GREY_RGB = (204, 204, 204)   # icons and neutral text
 
 EXIT_MS = 220.0  # fade-out duration on expiry; there is no fade-in

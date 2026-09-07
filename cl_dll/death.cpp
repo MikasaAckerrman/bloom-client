@@ -217,8 +217,8 @@ static cvar_t *cl_killfeed_font;        // 0 = HUD (scalable), 1 = console font
 // Rows hold POINTERS to these (assigned when the message arrives), so refreshing
 // in place re-colours rows that are already on screen -- otherwise a colour
 // change would only affect kills that happen afterwards.
-static vec3_t s_kfColorCT   = { 129.0f/255.0f, 154.0f/255.0f, 202.0f/255.0f };
-static vec3_t s_kfColorT    = { 221.0f/255.0f, 195.0f/255.0f, 135.0f/255.0f };
+static vec3_t s_kfColorCT   = { 131.0f/255.0f, 165.0f/255.0f, 222.0f/255.0f }; // #83a5de
+static vec3_t s_kfColorT    = { 232.0f/255.0f, 197.0f/255.0f, 111.0f/255.0f }; // #e8c56f
 static vec3_t s_kfColorGrey = { 204.0f/255.0f, 204.0f/255.0f, 204.0f/255.0f };
 
 // Team colour for the killfeed only (mirrors GetClientColor's team mapping).
@@ -301,17 +301,17 @@ int CHudDeathNotice :: Init( void )
 	// 1.4 is the compromise: 38.6 arc-minutes (70% of reference) for 28.2% of
 	// screen height, verified to stay under 30% on every common resolution
 	// from 720p through 1440p and 4:3 tablets. The user can still override.
-	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "1.9", FCVAR_ARCHIVE );
+	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "2.7", FCVAR_ARCHIVE );
 	cl_killfeed_x           = CVAR_CREATE( "cl_killfeed_x",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_y           = CVAR_CREATE( "cl_killfeed_y",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_rows        = CVAR_CREATE( "cl_killfeed_rows",        "6", FCVAR_ARCHIVE );
 	cl_killfeed_plate       = CVAR_CREATE( "cl_killfeed_plate",       "1", FCVAR_ARCHIVE );
-	cl_killfeed_plate_color = CVAR_CREATE( "cl_killfeed_plate_color", "46 43 42", FCVAR_ARCHIVE );
-	cl_killfeed_plate_alpha = CVAR_CREATE( "cl_killfeed_plate_alpha", "136", FCVAR_ARCHIVE );
+	cl_killfeed_plate_color = CVAR_CREATE( "cl_killfeed_plate_color", "14 14 14", FCVAR_ARCHIVE );
+	cl_killfeed_plate_alpha = CVAR_CREATE( "cl_killfeed_plate_alpha", "179", FCVAR_ARCHIVE );
 	cl_killfeed_corner      = CVAR_CREATE( "cl_killfeed_corner",      "1", FCVAR_ARCHIVE );
 	cl_killfeed_outline     = CVAR_CREATE( "cl_killfeed_outline",     "1", FCVAR_ARCHIVE );
-	cl_killfeed_ct_color    = CVAR_CREATE( "cl_killfeed_ct_color",    "129 154 202", FCVAR_ARCHIVE );
-	cl_killfeed_t_color     = CVAR_CREATE( "cl_killfeed_t_color",     "221 195 135", FCVAR_ARCHIVE );
+	cl_killfeed_ct_color    = CVAR_CREATE( "cl_killfeed_ct_color",    "131 165 222", FCVAR_ARCHIVE );
+	cl_killfeed_t_color     = CVAR_CREATE( "cl_killfeed_t_color",     "232 197 111", FCVAR_ARCHIVE );
 	cl_killfeed_icon_color  = CVAR_CREATE( "cl_killfeed_icon_color",  "204 204 204", FCVAR_ARCHIVE );
 	cl_killfeed_bold        = CVAR_CREATE( "cl_killfeed_bold",        "1", FCVAR_ARCHIVE );
 	// Which font draws the names. Default 1 = the CONSOLE font (the one chat and

@@ -268,7 +268,11 @@ static inline int kf_px( float refPx, float scale )
 
 #define KF_REF_GAP       8.0f  /* between element boxes (median 8.4, n=20)     */
 #define KF_REF_GAP_TIGHT 1.0f  /* wing -> weapon: boxes essentially touch      */
-#define KF_REF_VGAP      3.0f  /* between consecutive plates                   */
+#define KF_REF_VGAP      6.0f  /* between consecutive plates.
+                                * GC: vgap/plate = 9.5/83 = 0.114 (632p frame,
+                                * measured at x=1140). Ours 3/53 = 0.057 was
+                                * half that. 6 keeps the ratio at 0.114 with
+                                * the plate-53 base. */
 /* VGAP is 3, NOT GoldClient's hud_deathnotice_gap default of 4, and that is a
  * measurement beating a default. Re-measured 2026-09-05 on the native 1920x1080
  * reference (workspace/uicopy-kfgold/gapfit1080.py, column x=1890 which lies
@@ -310,14 +314,18 @@ static inline int kf_px( float refPx, float scale )
 #define KF_REF_CORNER    6.0f  /* plate corner bevel radius (was 3.5)         */
 #define KF_REF_OUTLINE   3.0f  /* local-player plate border thickness          */
 #define KF_REF_MARGIN_X 22.0f  /* feed right edge -> screen right edge         */
-#define KF_REF_MARGIN_Y 21.0f  /* feed top -> screen top                       */
+#define KF_REF_MARGIN_Y 39.0f  /* feed top -> screen top                       */
 #define KF_REF_RAISE    11.0f  /* airborne wing: lift above the row centre     */
 
 /* Texture height the icon scale is calibrated against: a 32px GoldClient combat
  * icon draws 19px tall on the reference, so icons are drawn at
  * texH * (19/32) * scale. Expressed as a ratio so any texture size works. */
 #define KF_ICON_TEX_REF 32.0f
-#define KF_ICON_BOX_REF 19.0f
+#define KF_ICON_BOX_REF 26.0f  /* GC draws a 32px texture as 41px on the 632p
+                                * frame (measured y=79..119) => 62.3 in the 960
+                                * axis. Our 19 gave icon/plate 0.36 vs GC 0.51.
+                                * 26 restores the ratio with plate 53. */
+
 
 /* WHY a shared ratio does not contradict GoldClient's own formula.
  *
