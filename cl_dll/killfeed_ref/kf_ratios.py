@@ -38,7 +38,11 @@
 
 import struct as _struct
 
-REF_H      = 1080.0   # reference frame height the numbers below were measured at
+REF_H      = 1080.0   # reference frame height the numbers below were measured at.
+                      # GoldClient divides by 960 (0x10061917->0x10061949), but our
+                      # numbers were measured on a 1080 frame; same axis, own
+                      # reference (сверка 2026-09-05). Do NOT switch to 960 without
+                      # re-measuring every metric -- tests pin absolute pixels.
 SCALE_MIN  = 0.45     # GoldClient's own floor: [0x1017d878] reads 0.449999988
                       # and the killfeed applies it as a LOWER bound at
                       # 0x10061a99 (`maxss xmm2, xmm0`). Verified, not inferred.
@@ -47,13 +51,16 @@ SCALE_MAX  = 4.0      # clamp ceiling so a fat cvar cannot fill the screen
 # ---- row metrics, in REFERENCE pixels (at REF_H) ---------------------------
 # MEASURED on the native GoldClient frame (1920x1080). Cross-checks that made
 # these self-consistent:
-#   plate height 33 = text cell 27 + 2*pady 3
+#   plate height 53 = text cell 27 + 2*pady 13
 #   row pitch    36 = plate 33 + vgap 3
 #   icon box     19 = 32px texture * 0.607 shared scale
 #   '+' box       7 = 12px texture * 0.607   (7/19 == 12/32 -> ONE scale)
-REF_TEXT_H   = 27.0   # text cell height: plate 33 - 2*pady
+REF_TEXT_H   = 27.0   # text cell height: plate 53 - 2*pady
 REF_PADX     = 13.0   # plate edge -> first/last element box
-REF_PADY     = 3.0    # plate edge -> content, top and bottom
+REF_PADY     = 13.0   # plate edge -> content, top and bottom.
+                      # GC proportion (632p frame): text is 36% of the plate;
+                      # our old 3px made it 58% (cramped). 13 => plate 53.
+                      # Must mirror KF_REF_PADY in killfeed_layout.h.
 REF_GAP      = 8.0    # between element boxes (median 8.4, n=20)
 REF_GAP_TIGHT = 1.0   # wing -> weapon: boxes essentially touch
 REF_VGAP     = 3.0    # between consecutive plates -- MEASURED, not GoldClient's
@@ -245,8 +252,8 @@ def icon_height(tex_h, s, max_h=0):
     (32x32) -> 19x19 on the reference; 7/19 == 12/32.
 
     CLAMPED to max_h (the text cell) when max_h > 0: all six reference plates are
-    33px = textH 27 + 2*pady 3, and a 64px texture at the shared scale would be
-    38px, which would have made that row's plate 44px. It did not.
+    53px = textH 27 + 2*pady 13, and a 64px texture at the shared scale would be
+    38px, which stays inside the cell.
     """
     if tex_h <= 0:
         return 0

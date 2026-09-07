@@ -127,7 +127,7 @@ static void test_wing_uses_tight_gap(void)
 	 * vs 0.291 for top-aligned-to-plate. */
 	{
 		/* cy must be the REAL row centre, or the overhang check is meaningless:
-		 * rowH = max(textCell, tallestIcon) + 2*pady = 27 + 6 = 33 here. */
+		 * rowH = max(textCell, tallestIcon) + 2*pady = 27 + 26 = 53. */
 		int top = 100;
 		int rowH = kf_row_height(M.textH, kf_tallest(el, n)) + M.pady * 2;
 		int cy = top + rowH / 2;
@@ -135,8 +135,11 @@ static void test_wing_uses_tight_gap(void)
 		CHECK(kf_elem_y(&el[1], cy, M.raise)
 			  == cy - el[1].h / 2 - M.raise,
 			  "raised wing is lifted above the row centre");
-		CHECK(kf_elem_y(&el[1], cy, M.raise) < top,
-			  "at the reference metrics the wing overhangs the plate top");
+		/* GC reference: icons sit INSIDE the plate (y78..120 in plate
+		 * y60..143, measured on the 632p frame). With pady 13 the wing
+		 * clears the top edge; the old pady-3 layout pushed it out by 8. */
+		CHECK(kf_elem_y(&el[1], cy, M.raise) >= top,
+			  "at the reference metrics the wing stays inside the plate");
 		CHECK(el[2].raised == 0, "weapon is not raised");
 		CHECK(kf_elem_y(&el[2], cy, M.raise) == cy - el[2].h / 2,
 			  "weapon stays vertically centred");

@@ -301,7 +301,7 @@ int CHudDeathNotice :: Init( void )
 	// 1.4 is the compromise: 38.6 arc-minutes (70% of reference) for 28.2% of
 	// screen height, verified to stay under 30% on every common resolution
 	// from 720p through 1440p and 4:3 tablets. The user can still override.
-	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "1.4", FCVAR_ARCHIVE );
+	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "1.9", FCVAR_ARCHIVE );
 	cl_killfeed_x           = CVAR_CREATE( "cl_killfeed_x",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_y           = CVAR_CREATE( "cl_killfeed_y",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_rows        = CVAR_CREATE( "cl_killfeed_rows",        "6", FCVAR_ARCHIVE );

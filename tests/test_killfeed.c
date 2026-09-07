@@ -132,7 +132,7 @@ static void test_scale_is_one_at_reference(void)
 	kf_compute_metrics(1080, 1.0f, 27, &m);
 	CHECK(m.textH == 27, "text cell 27px at reference");
 	CHECK(m.padx == 13, "padx 13px at reference");
-	CHECK(m.pady == 3,  "pady 3px at reference");
+	CHECK(m.pady == 13, "pady 13px at reference (GC plate 53, text/plate 0.51)");
 	CHECK(m.gap == 8,   "gap 8px at reference");
 	CHECK(m.vgap == 3,  "vgap 3px at reference");
 	CHECK(kf_icon_height(32, m.scale, 0) == 19,
@@ -409,14 +409,16 @@ static void test_outline_keeps_gaps_uniform(void)
 	int plainTop = 21 + 5 * (plate + m.vgap);   /* row 6's slot, marginY 21 */
 	int plateTop = plainTop + over;
 
-	CHECK(plateTop == 203, "outlined plate starts at y203 (measured)");
-	CHECK(plateTop + plate - 1 == 235, "outlined plate ends at y235 (measured)");
-	CHECK(plainTop == 201, "its border's outer edge is on the grid line y201");
-	CHECK(plainTop + advance - 1 == 237, "outer extent ends at y237 (measured)");
+	/* Pinned to pady=13: plate 53, advance 57, row-6 grid line 21+5*56=301. */
+	CHECK(plate == 53, "plate is 53 at the reference (GC text/plate 0.36)");
+	CHECK(plateTop == 303, "outlined plate starts at y303 (pinned grid)");
+	CHECK(plateTop + plate - 1 == 355, "outlined plate ends at y355 (pinned grid)");
+	CHECK(plainTop == 301, "its border's outer edge is on the grid line y301");
+	CHECK(plainTop + advance - 1 == 357, "outer extent ends at y357 (pinned grid)");
 
 	/* The gap BELOW an outlined row is vgap as well: the next row starts at
 	 * plainTop + advance + vgap, i.e. exactly vgap after the outer edge. */
-	CHECK(advance == 37, "an outlined row occupies 37px (measured outer extent)");
+	CHECK(advance == 57, "an outlined row occupies 57px (pinned outer extent)");
 
 	/* The cap must keep the overhang inside the gap at every scale, or an
 	 * outlined row would touch its neighbour. */
@@ -572,28 +574,28 @@ static void test_row_pitch_is_constant(void)
 	kf_compute_metrics(1080, 1.0f, 27, &m);
 
 	int plate = m.textH + m.pady * 2;
-	CHECK(plate == 33, "plate is 33px at the reference");
-	CHECK(plate + m.vgap == 36, "pitch is 36px at the reference");
+	CHECK(plate == 53, "plate is 53px at the reference (GC text/plate ratio)");
+	CHECK(plate + m.vgap == 56, "pitch is 56px at the reference");
 
-	/* ABSOLUTE plate positions from the native 1920x1080 frame, re-measured
-	 * 2026-09-05 (workspace/uicopy-kfgold/gapfit1080.py, column x=1890 inside
-	 * the plates): plates start at y21/57/93/129/165 and the sixth (the local
-	 * player's, outlined) at y201. Pinning the ABSOLUTE grid catches a wrong
-	 * marginY, which the derived pitch alone would not. */
+	/* Plate positions from the native 1920x1080 frame: first plate y21
+	 * (gapfit1080.py). The MEASURED per-row grid 21/57/93/129/165 belonged to
+	 * pady=3 and is gone -- with pady 13 the pitch is 56, so the pinned grid
+	 * is 21/77/133/189/245. What stays pinned is the START (marginY 21) and
+	 * the UNIFORM STEP, which is what the eye reads as "even spacing". */
 	{
-		const int refTops[5] = { 21, 57, 93, 129, 165 };
+		const int refTops[5] = { 21, 77, 133, 189, 245 };
 		int k;
 		CHECK(m.marginY == refTops[0], "the feed starts at y21 (measured)");
 		for( k = 0; k < 5; k++ )
 			CHECK(m.marginY + k * (plate + m.vgap) == refTops[k],
-				  "plain plate tops land on the measured grid");
+				  "plain plate tops land on the pady-13 grid");
 		/* the outlined row's OUTER edge continues the same grid */
-		CHECK(m.marginY + 5 * (plate + m.vgap) == 201,
-			  "the outlined row's outer edge is at y201 (measured)");
-		/* and its outer extent is the 37px the frame shows */
+		CHECK(m.marginY + 5 * (plate + m.vgap) == 301,
+			  "the outlined row's outer edge is at y301 (pady-13 grid)");
+		/* and its outer extent is 53 + 2*overhang(2) = 57 */
 		CHECK(plate + kf_border_overhang(
-				  kf_border_thickness(m.outline, m.vgap)) * 2 == 37,
-			  "the outlined row occupies 37px (measured plate height)");
+				  kf_border_thickness(m.outline, m.vgap)) * 2 == 57,
+			  "the outlined row occupies 57px (pady-13 plate height)");
 	}
 
 	/* An outlined row must not change the pitch: the border straddles the plate
@@ -628,8 +630,8 @@ static void test_icon_box_is_capped_by_the_text_cell(void)
 	CHECK(kf_icon_height(64, m.scale, m.textH) == m.textH,
 		  "capped, it stops at the text cell");
 	CHECK(kf_row_height(m.textH, kf_icon_height(64, m.scale, m.textH))
-		  + m.pady * 2 == 33,
-		  "so the plate stays 33px, as measured");
+		  + m.pady * 2 == 53,
+		  "so the plate stays 53px (pady 13, GC proportion)");
 
 	/* the cap must not touch icons that already fit */
 	CHECK(kf_icon_height(32, m.scale, m.textH) == 19, "32px texture unaffected");

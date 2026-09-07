@@ -249,13 +249,23 @@ static inline int kf_px( float refPx, float scale )
  * -- these ARE the reference-space numbers. Multiply by kf_scale() to draw.
  *
  * Cross-checks that made these self-consistent on the reference frame:
- *   plate height 33 = text cell 27 + 2*pady 3
+ *   plate height 53 = text cell 27 + 2*pady 13.
+ *   Icon/plate ratio: GC 0.51, ours 19/53 = 0.36 -- icons are the NEXT
+ *   proportion to fix (per-icon naturalIconH), tracked separately.
  *   row pitch    36 = plate 33 + vgap 3
  *   icon box     19 = 32px texture * 0.607 shared scale
  *   '+' box       7 = 12px texture * 0.607   (7/19 == 12/32 -> ONE scale)      */
 #define KF_REF_TEXT_H   27.0f  /* text cell height: plate 33 - 2*pady          */
 #define KF_REF_PADX     13.0f  /* plate edge -> first/last element box         */
-#define KF_REF_PADY      3.0f  /* plate edge -> content, top and bottom        */
+#define KF_REF_PADY     13.0f  /* plate edge -> content, top and bottom.
+                                * GC proportion: text occupies 36% of the plate
+                                * (84px plate, 30px caps on the 632p reference
+                                * frame). Our 3px made text 58% of the plate --
+                                * the "cramped" look the user reported. 13px
+                                * gives plate 53 and text/plate 0.51. Same
+                                * frame: GC 0.36; our text is metrically a
+                                * cell, not a cap, hence 0.51 not 0.36. */
+
 #define KF_REF_GAP       8.0f  /* between element boxes (median 8.4, n=20)     */
 #define KF_REF_GAP_TIGHT 1.0f  /* wing -> weapon: boxes essentially touch      */
 #define KF_REF_VGAP      3.0f  /* between consecutive plates                   */
