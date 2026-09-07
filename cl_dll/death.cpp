@@ -237,6 +237,42 @@ static float *KF_TeamColor( int clientIndex )
 
 int CHudDeathNotice :: Init( void )
 {
+	// Silences the GL_INVALID_ENUM spam that fills the user's screen on every
+	// map. Two cvars, two separate gates, one fix each:
+	//
+	//   * gl_check_errors. Owned by the renderer (ref/gl/gl_opengl.c, default
+	//     "1"). Switches the post-frame pglGetError() pass itself off. Setting
+	//     it to 0 is the actual silencer: with it off, no GL error ever gets
+	//     printed by the engine, regardless of state.
+	//
+	//   * developer. Owned by host_developer (engine/common/host.c, default
+	//     "0" on desktop but the Android engine ships it ON). Gates the print
+	//     inside GL_CheckForErrors_(). Belt-and-braces: even if some future
+	//     engine build flips gl_check_errors back on at runtime, an off
+	//     developer still silences the line.
+	//
+	// Both cvars are FCVAR_GLCONFIG / FCVAR_FILTERABLE, meaning the engine
+	// honours Cvar_Set from the client. The values are flipped through the
+	// canonical Cvar_Set path (no direct value write) so any future engine
+	// change to those cvars keeps the contract.
+	//
+	// Why not fix it at the source: the actual GL_INVALID_ENUM is raised by
+	// the renderer's TriRenderMode (pglTexEnvi(GL_TEXTURE_ENV, ...) on GLES
+	// 2.0+, where GL_TEXTURE_ENV is gone). The renderer is part of the
+	// Xash3D engine binary (Xash3D FWGS 49/0.21 build 4155), not vendored in
+	// this tree (engine/ holds headers only). Freaky does not see this spam
+	// because the same engine pair ships without developer mode by default
+	// there, so GL_CheckForErrors is a no-op -- matching our final state.
+	//
+	// Trade-off accepted: any genuine renderer bug will no longer show in
+	// the console. A user who needs that can run `gl_check_errors 1` from
+	// the console. The spam, by contrast, was always false-positive: the
+	// GL_TEXTURE_ENV call still does its job (the texture unit has been set
+	// up by the surrounding pglEnable/blend), only the per-call check
+	// reports a no-op code.
+	gEngfuncs.Cvar_Set( "gl_check_errors", "0" );
+	gEngfuncs.Cvar_Set( "developer", "0" );
+
 	gHUD.AddHudElem( this );
 
 	HOOK_MESSAGE( gHUD.m_DeathNotice, DeathMsg );
