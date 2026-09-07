@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 fails=0
 
-for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds test_killfeed_corner test_killfeed_fade test_menu_probe; do
+for t in test_killfeed test_killfeed_geom test_killfeed_cvars test_killfeed_slots test_killfeed_textscale test_killfeed_bounds test_killfeed_corner test_killfeed_fade test_killfeed_blend test_menu_probe; do
 	printf '%-26s ' "$t"
 	if gcc -Wall -Wextra -I cl_dll/include -o /tmp/kf_check_bin "tests/$t.c" -lm 2>/tmp/kf_check_err; then
 		if /tmp/kf_check_bin >/tmp/kf_check_out 2>&1; then
@@ -90,6 +90,38 @@ if python3 scripts/kf_corner_check.py >/tmp/kf_check_out 2>&1; then
 	tail -1 /tmp/kf_check_out
 else
 	grep -nE 'OUT OF SYNC|differs|count' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'blend bracket sync'
+if python3 scripts/kf_blend_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE 'OUT OF SYNC|expects|expected|harness no longer' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'blend negative control'
+if sh scripts/negctl_blend_check.sh >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE '^FAIL' /tmp/kf_check_out | head -5
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'blend bracket c-test'
+if sh -c "gcc -w -o /tmp/kfb tests/test_killfeed_blend.c && /tmp/kfb >/dev/null" >/tmp/kf_check_out 2>&1; then
+	echo "passed"
+else
+	cat /tmp/kf_check_out
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'blend c-test negative'
+if sh scripts/negctl_blend.sh >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	grep -nE '^FAIL' /tmp/kf_check_out | head -5
 	fails=$((fails+1))
 fi
 

@@ -283,7 +283,21 @@ static inline int kf_px( float refPx, float scale )
  * as an int and added to the row height directly (0x10061df3 -> 0x10061e49), so
  * at 2x it would stay 3px and the feed would visually fuse. Ours goes through
  * kf_px() with the one scale like every other metric. Do not "fix" this to 4. */
-#define KF_REF_CORNER    3.5f  /* plate corner bevel radius                    */
+/* Plate corner bevel radius.
+ *
+ * MEASURED in the previous build from GoldClient's 6-row reference (R=3.5 at
+ * the reference screen height) and kept faithful then. The user's complaint
+ * is that the corner is invisible at game resolution -- at scale 1.0 and a
+ * 33px plate, 3.5px rounds to barely one anti-aliased row per scanline, and
+ * at scale 1.4 it shrinks further because the radius is multiplied by scale
+ * along with every other metric. GoldClient itself ships a 6px corner sprite
+ * and reads the radius as a fixed int (death.cpp note, 0x10061df3), so its
+ * 6px stays 6px at 2x and the bend is always visible.
+ *
+ * Doubling the reference radius here puts the bend at the same fraction of
+ * plate height GoldClient ships, and `cl_killfeed_corner` (a multiplier on
+ * top) lets the user dial it back if they want a sharper look. */
+#define KF_REF_CORNER    6.0f  /* plate corner bevel radius (was 3.5)         */
 #define KF_REF_OUTLINE   3.0f  /* local-player plate border thickness          */
 #define KF_REF_MARGIN_X 22.0f  /* feed right edge -> screen right edge         */
 #define KF_REF_MARGIN_Y 21.0f  /* feed top -> screen top                       */

@@ -65,7 +65,7 @@ REF_VGAP     = 3.0    # between consecutive plates -- MEASURED, not GoldClient's
                       # (pushed at client.dll 0x1000165b), but the frame shows 3
                       # and the frame is what we copy. Also: their gap does NOT
                       # scale (int, added directly at 0x10061df3), ours does.
-REF_CORNER   = 3.5    # plate corner bevel radius
+REF_CORNER   = 6.0    # plate corner bevel radius (was 3.5; see killfeed_layout.h)
 REF_OUTLINE  = 3.0    # local-player plate border thickness
 REF_MARGIN_X = 22.0   # feed right edge -> screen right edge
 REF_MARGIN_Y = 21.0   # feed top -> screen top

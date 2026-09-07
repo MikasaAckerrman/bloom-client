@@ -463,15 +463,25 @@ static void KF_DrawIcon( HSPRITE spr, int x, int y, int w, int h,
 
 	SPR_Set( spr, r, g, b );
 
-	// force additive: black -> transparent, and the RGB tint used for the
-	// fade-out actually dissolves the icon instead of darkening it.
-	if( gEngfuncs.pTriAPI )
-		gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
-
+	// BLEND STATE LIVES ON THE CALLER, NOT HERE.
+	//
+	// The icons have to be drawn additively so that black fades to transparent
+	// (death.cpp:421-431). Setting the render mode on every icon used to work,
+	// but it also made the engine spam OpenGL Error: GL_INVALID_ENUM on every
+	// transition: every line holds up to KF_MAX_ELEMS (16) icons, every frame
+	// holds up to MAX_DEATHNOTICES (4) lines, and the engine flags the swap to
+	// kRenderTransAdd whenever the current sprite pipeline is mid-upload.
+	//
+	// The fix is structural, not just a quieter call: render mode is set ONCE
+	// by the row loop (KF_Draw), bracketing the whole pass, and restored to
+	// trans-texture afterwards. That cuts ~100 transitions per frame down to
+	// two and stops the console spam.
+	//
+	// A row that needs a different blend (none today -- the plate is drawn by
+	// the HUD bitmap API which sets its own state) would have to bracket its
+	// own block, but no caller exists. Adding a parameter here would just
+	// re-introduce the same per-icon toggle the change was meant to remove.
 	gEngfuncs.pfnSPR_DrawGeneric( 0, x, y, NULL, 1, 1, w, h );
-
-	if( gEngfuncs.pTriAPI )
-		gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
 }
 
 // On-screen size of one kf sprite. ONE scale applies to every icon in the feed
@@ -1203,6 +1213,22 @@ int CHudDeathNotice :: Draw( float flTime )
 		}
 	}
 
+	// ONE render-mode bracket per frame, not one per icon (see KF_DrawIcon).
+	// Both KF_DrawIcon and the legacy path draw through the sprite pipeline,
+	// which is what kRenderTransAdd maps to GL_SRC_ALPHA/GL_ONE. Restore to
+	// trans-texture afterwards so the rest of the HUD keeps its normal blend.
+	// `useKf` gates this: if the killfeed is the only reason the bracket
+	// exists, it should not run when the killfeed isn't drawing.
+	bool needBlendBracket = false;
+	if( useKf )
+	{
+		for( i = 0; i < MAX_DEATHNOTICES; i++ )
+			if( rgDeathNoticeList[i].bUsed )
+				{ needBlendBracket = true; break; }
+	}
+	if( needBlendBracket && gEngfuncs.pTriAPI )
+		gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
+
 	for( i = 0; i < MAX_DEATHNOTICES; i++ )
 	{
 		if ( !rgDeathNoticeList[i].bUsed )
@@ -1315,6 +1341,12 @@ int CHudDeathNotice :: Draw( float flTime )
 			}
 		}
 	}
+
+	// Close the render-mode bracket opened before the row loop. The icon path
+	// needs additive for the fade; the rest of the HUD runs on the default
+	// trans-texture blend, which is what the engine had before our pass.
+	if( needBlendBracket && gEngfuncs.pTriAPI )
+		gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
 
 	if( i == 0 )
 		m_iFlags &= ~HUD_DRAW; // disable hud item
