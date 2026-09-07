@@ -301,7 +301,7 @@ int CHudDeathNotice :: Init( void )
 	// 1.4 is the compromise: 38.6 arc-minutes (70% of reference) for 28.2% of
 	// screen height, verified to stay under 30% on every common resolution
 	// from 720p through 1440p and 4:3 tablets. The user can still override.
-	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "2.7", FCVAR_ARCHIVE );
+	cl_killfeed_scale       = CVAR_CREATE( "cl_killfeed_scale",     "1.55", FCVAR_ARCHIVE );
 	cl_killfeed_x           = CVAR_CREATE( "cl_killfeed_x",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_y           = CVAR_CREATE( "cl_killfeed_y",           "1", FCVAR_ARCHIVE );
 	cl_killfeed_rows        = CVAR_CREATE( "cl_killfeed_rows",        "6", FCVAR_ARCHIVE );
@@ -314,6 +314,37 @@ int CHudDeathNotice :: Init( void )
 	cl_killfeed_t_color     = CVAR_CREATE( "cl_killfeed_t_color",     "232 197 111", FCVAR_ARCHIVE );
 	cl_killfeed_icon_color  = CVAR_CREATE( "cl_killfeed_icon_color",  "204 204 204", FCVAR_ARCHIVE );
 	cl_killfeed_bold        = CVAR_CREATE( "cl_killfeed_bold",        "1", FCVAR_ARCHIVE );
+	// MIGRATION: every cvar above is ARCHIVE, so a default changed in code never
+	// reaches an existing config.cfg -- the engine restores the stale value and
+	// the new look silently never ships (measured: plate stayed (47,48,48) after
+	// the CS2 repalette for exactly this reason). KF_CFG_VERSION tracks the
+	// current default set; when it moves, the values the user has NOT explicitly
+	// changed are reset to the new defaults once. A user tweak survives because
+	// we compare against the PREVIOUS defaults, not against the new ones.
+	{
+		static const char *const KF_DEFAULT_KEYS[] = {
+			"cl_killfeed_scale", "cl_killfeed_plate_color", "cl_killfeed_plate_alpha",
+			"cl_killfeed_ct_color", "cl_killfeed_t_color"
+		};
+		static const char *const KF_PREV_DEFAULTS[] = {
+			"1.4", "46 43 42", "136", "129 154 202", "221 195 135"
+		};
+		static const char *const KF_NEW_DEFAULTS[] = {
+			"1.55", "14 14 14", "179", "131 165 222", "232 197 111"
+		};
+		cvar_t *ver = CVAR_CREATE( "cl_killfeed_cfgversion", "0", FCVAR_ARCHIVE );
+		if( ver->value < 2.0f )
+		{
+			for( size_t k = 0; k < sizeof( KF_DEFAULT_KEYS ) / sizeof( KF_DEFAULT_KEYS[0] ); k++ )
+			{
+				cvar_t *c = gEngfuncs.pfnGetCvarPointer( KF_DEFAULT_KEYS[k] );
+				if( !c ) continue;
+				if( !strcmp( c->string, KF_PREV_DEFAULTS[k] ) )
+					gEngfuncs.Cvar_Set( KF_DEFAULT_KEYS[k], KF_NEW_DEFAULTS[k] );
+			}
+			gEngfuncs.Cvar_Set( "cl_killfeed_cfgversion", "2" );
+		}
+	}
 	// Which font draws the names. Default 1 = the CONSOLE font (the one chat and
 	// the console use). Rationale, all three measured in the engine source:
 	//

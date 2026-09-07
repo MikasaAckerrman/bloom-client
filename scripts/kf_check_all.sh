@@ -149,6 +149,22 @@ else
 	fails=$((fails+1))
 fi
 
+printf '%-26s ' 'migration mirror'
+if python3 scripts/kf_migration_check.py >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	head -5 /tmp/kf_check_out
+	fails=$((fails+1))
+fi
+
+printf '%-26s ' 'migration c-test'
+if gcc -w -o /tmp/kfmig tests/test_killfeed_migration.c 2>/dev/null && /tmp/kfmig >/tmp/kf_check_out 2>&1; then
+	tail -1 /tmp/kf_check_out
+else
+	head -5 /tmp/kf_check_out
+	fails=$((fails+1))
+fi
+
 printf '%-26s ' 'menu negative control'
 if sh scripts/negctl_menu.sh >/tmp/kf_check_out 2>&1; then
 	tail -1 /tmp/kf_check_out
