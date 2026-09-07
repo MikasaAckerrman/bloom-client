@@ -31,8 +31,9 @@ public class CZeroActivity extends Activity {
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 .putExtra("gamedir", "czero")
                 .putExtra("gamelibdir", getApplicationInfo().nativeLibraryDir)
-                // No -dev: see MainActivity. Same GL-spam root.
-                .putExtra("argv", "-log -dll @yapb")
+                // -console: see MainActivity. Enables console without -dev,
+                // so no GL spam but the console still opens.
+                .putExtra("argv", "-console -log -dll @yapb")
                 .putExtra("package", getPackageName()));
         finish();
     }
